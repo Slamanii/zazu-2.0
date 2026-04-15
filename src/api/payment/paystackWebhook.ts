@@ -1,4 +1,4 @@
-import { supabase } from "../../db/supabase.js"
+import { updatePaymentStatus, updateOrderStatus, getPaymentByReference } from "../../db/queries"
 import crypto from "crypto"
 import express from 'express'
 
@@ -23,15 +23,8 @@ paystackRouter.post('/webhook', async (req, res) => {
 
     const orderId = event.data.reference
 
-    await supabase
-      .from('payments')
-      .update({ status: 'success' })
-      .eq('order_id', orderId)
-      .eq('paystack_ref', event.data.reference)
-
-    await supabase.from('orders')
-        .update({ status: 'paid' })
-        .eq('id', orderId)
+    await updatePaymentStatus(orderId, event.data.reference, 'success')
+    await updateOrderStatus(orderId, 'paid')
   }
 
   res.sendStatus(200)
@@ -46,13 +39,10 @@ paystackRouter.get("/return", async (req, res) => {
     return res.status(400).send("Missing reference")
   }
 
-  const { data: payment, error } = await supabase
-    .from('payments')
-    .select('zazu_sub_name')
-    .eq('id', reference)
-    .single()
-
-  if (error || !payment) {
+  let payment: { zazu_sub_name: string }
+  try {
+    payment = await getPaymentByReference(reference as string)
+  } catch (error) {
     console.error("Order not found:", error)
     return res.status(404).send("Order not found")
   }

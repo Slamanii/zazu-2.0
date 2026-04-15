@@ -1,5 +1,5 @@
-import { supabase } from '../db/supabase'
-import { VendorState, Category } from '../shared/types'
+import { getVendorById, getCategoriesWithItems } from '../db/queries'
+import { VendorState } from '../types'
 import { localUserStore } from './localUserStore'
 
 
@@ -7,45 +7,20 @@ import { localUserStore } from './localUserStore'
 export let vendorState: VendorState | null = null
 
 
-export  async function loadVendorState(vendorId: string) {
-    
-         const { data: vendor, error: vendorErr } = await supabase
-            .from('vendor')
-            .select('*')
-            .eq('id', vendorId)
-            .single()
+export async function loadVendorState(vendorId: string) {
+    const vendor = await getVendorById(vendorId)
+    const categories = await getCategoriesWithItems(vendorId)
 
-            if (vendorErr) throw vendorErr
-
-
-        const { data: categories, error } = await supabase
-            .from('categories')
-            .select(`
-                id,
-                name,
-                item (
-                    id,
-                    name,
-                    price,
-                    stock,
-                    image_url
-            )
-                `)
-            .eq('vendor_id', vendorId)
-
-           if (error) throw error
-
-                vendorState = {
-                    vendorId,
-                    lat: vendor.lat,
-                    lng: vendor.lng,
-                    phone: vendor.phone,
-                    acct_type: vendor.acct_type,
-                    categories: categories as Category[],
-                    lastUpdated: new Date()
-                }
-            
+    vendorState = {
+        vendorId,
+        lat: vendor.lat,
+        lng: vendor.lng,
+        phone: vendor.phone,
+        acct_type: vendor.acct_type,
+        categories,
+        lastUpdated: new Date()
     }
+}
 
 
     export async function buildPreflightPayload(userId: number) {

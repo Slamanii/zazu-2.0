@@ -1,4 +1,4 @@
-import { MainUser, userLocation  } from '../shared/types'
+import { MainUser, userLocation } from '../types'
 import crypto from 'crypto'
 
 

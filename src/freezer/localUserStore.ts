@@ -1,4 +1,4 @@
-import { localUser, userLocation } from '../shared/types'
+import { localUser, userLocation } from '../types'
 
 class LocalUserStore {
 

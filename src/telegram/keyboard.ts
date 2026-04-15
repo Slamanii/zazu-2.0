@@ -3,7 +3,7 @@ export const mainMenu = {
         inline_keyboard: [
             [{ text: 'Place Order', callback_data: "PLACE_ORDER"}],
             [{ text: 'location', callback_data: "LOCATION"}],
-            [{ text: 'Menu', callback_data: "MENU"}],
+            [{ text: 'Menu', web_app: { url: "https://your-web-app-url.com" } }],
             [{ text: 'My Orders', callback_data: "MY_ORDERs"}],
             [{ text: 'Settings', callback_data: "SETTINGS"}],
             [{ text: 'Help', callback_data: "HELP"}],
@@ -23,7 +23,7 @@ export const locationButton = {
 export const showMenuButton = {
     reply_markup: {
         inline_keyboard: [
-            [{ text: 'Menu', callback_data: 'SHOW_MENU' }]
+            [{ text: 'Menu', web_app: { url: "https://your-web-app-url.com" } }]
         ]
     }
 }

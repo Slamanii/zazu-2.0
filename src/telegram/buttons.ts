@@ -1,11 +1,11 @@
 import TelegramBot from "node-telegram-bot-api";
 import { handlePlaceOrder, handleSetLocation, handleShowMenu, handleOpenCategory, handleSelectItem, handleDecreaseQty, handleIncreaseQty, handleRemoveItem, handleCheckout, handlePayStart  } from "./handlers"
+import { VENDOR_ID } from "../env"
 
 
 export async function onButtonClick(bot: TelegramBot, query: any) {
 
     const data = query.data
-    const VENDOR_ID = query.vendor.id //this is probably wrong
     const chatId = query.message.chat.id
     const userId = query.from.id
     const email = query.from.email
