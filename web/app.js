@@ -1,5 +1,5 @@
 // ── Config ──────────────────────────────────────────────
-const API_BASE = "https://your-backend-url.com" // replace with your deployed backend URL
+const API_BASE = "https://907a-2605-59c0-e3b-2e00-7591-aa1c-803b-e26.ngrok-free.app"
 
 // ── Telegram SDK ────────────────────────────────────────
 const tg = window.Telegram?.WebApp
@@ -45,7 +45,9 @@ cartFab.addEventListener("click", () => {
 // ── Fetch menu ──────────────────────────────────────────
 async function loadMenu() {
   try {
-    const res = await fetch(`${API_BASE}/menu`)
+    const res = await fetch(`${API_BASE}/menu`, {
+      headers: { "ngrok-skip-browser-warning": "true" }
+    })
     menuData = await res.json()
     renderCategories()
   } catch (e) {

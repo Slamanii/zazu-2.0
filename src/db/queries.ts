@@ -1,11 +1,24 @@
 import { supabase } from "./supabase";
 import { Category } from "../types";
 
+// ---------- Bot ----------
+
+export async function getVendorByBotUsername(botUsername: string) {
+  const { data, error } = await supabase
+    .from("telegram_bots")
+    .select("vendor_id, bot_id, bot_username, is_active")
+    .eq("bot_username", botUsername)
+    .single();
+  if (error) throw error;
+  if (!data.is_active) throw new Error(`Bot @${botUsername} is inactive`);
+  return data;
+}
+
 // ---------- Vendor ----------
 
 export async function getVendorById(vendorId: string) {
   const { data, error } = await supabase
-    .from("vendor")
+    .from("telegram_vendor")
     .select("*")
     .eq("id", vendorId)
     .single();
@@ -15,7 +28,7 @@ export async function getVendorById(vendorId: string) {
 
 export async function getCategoriesWithItems(vendorId: string) {
   const { data, error } = await supabase
-    .from("categories")
+    .from("telegram_categories")
     .select(
       `
       id,
@@ -45,7 +58,7 @@ export async function insertOrder(order: {
   status: string;
 }) {
   const { data, error } = await supabase
-    .from("orders")
+    .from("telegram_orders")
     .insert(order)
     .select("*")
     .single();
@@ -56,7 +69,7 @@ export async function insertOrder(order: {
 
 export async function getOrderById(orderId: string) {
   const { data, error } = await supabase
-    .from("orders")
+    .from("telegram_orders")
     .select("*")
     .eq("id", orderId);
   if (error || !data) throw new Error("Order not found: " + error?.message);
@@ -65,7 +78,7 @@ export async function getOrderById(orderId: string) {
 
 export async function updateOrderStatus(orderId: string, status: string) {
   const { error } = await supabase
-    .from("orders")
+    .from("telegram_orders")
     .update({ status })
     .eq("id", orderId);
   if (error) throw error;
@@ -80,7 +93,7 @@ export async function insertPayment(payment: {
   status: string;
 }) {
   const { data, error } = await supabase
-    .from("payments")
+    .from("telegram_payments")
     .insert(payment)
     .select("*")
     .single();
@@ -91,7 +104,7 @@ export async function insertPayment(payment: {
 
 export async function updatePaystackRef(orderId: string, paystackRef: string) {
   const { error } = await supabase
-    .from("payments")
+    .from("telegram_payments")
     .update({ paystack_ref: paystackRef })
     .eq("order_id", orderId);
   if (error) throw error;
@@ -103,7 +116,7 @@ export async function updatePaymentStatus(
   status: string,
 ) {
   const { error } = await supabase
-    .from("payments")
+    .from("telegram_payments")
     .update({ status })
     .eq("order_id", orderId)
     .eq("paystack_ref", paystackRef);
@@ -112,7 +125,7 @@ export async function updatePaymentStatus(
 
 export async function getPaymentStatus(orderId: string) {
   const { data, error } = await supabase
-    .from("payments")
+    .from("telegram_payments")
     .select("status")
     .eq("order_id", orderId)
     .single();
@@ -122,7 +135,7 @@ export async function getPaymentStatus(orderId: string) {
 
 export async function getPaymentByReference(reference: string) {
   const { data, error } = await supabase
-    .from("payments")
+    .from("telegram_payments")
     .select("zazu_sub_name")
     .eq("id", reference)
     .single();

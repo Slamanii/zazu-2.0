@@ -1,11 +1,13 @@
 import express from "express";
 import axios from "axios";
+import path from "path";
 import "./telegram/zazu_main_client";
 import "./telegram/zazu_vendor_acct";
 import { vendorState } from "./freezer/vendorState";
 
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "../web")));
 
 app.post("/ride-preflight", async (req, res) => {
   const payload = req.body;
