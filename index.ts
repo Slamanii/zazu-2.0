@@ -1,15 +1,15 @@
 import express from "express";
 import path from "path";
-import "./telegram/zazu_main_client";
-import "./telegram/zazu_vendor_acct";
-import { startNgrok } from "./ngrok";
+import "./src/telegram/zazu_main_client";
+import "./src/telegram/zazu_vendor_acct";
+import { startNgrok } from "./src/ngrok";
 import ridesRouter from "./api/rides";
 import payRouter from "./api/pay";
 import menuRouter from "./api/menu";
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "../web")));
+app.use(express.static(path.join(__dirname, "web")));
 
 app.use(ridesRouter);
 app.use(payRouter);

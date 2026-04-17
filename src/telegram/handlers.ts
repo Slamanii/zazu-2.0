@@ -9,6 +9,7 @@ import {
   getUserByTelegramId,
   upsertCart,
   getCart,
+  getItemStock,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { localUserStore } from "../freezer/localUserStore";
@@ -168,11 +169,20 @@ export async function handleSelectItem(
     return bot.sendMessage(chatId, "Out of Stock");
   }
 
-  const cartData = await getCart(userId, vendorId);
+  const [cartData, stock] = await Promise.all([
+    getCart(userId, vendorId),
+    getItemStock(item.id),
+  ]);
   const items: CartItem[] = cartData?.items ?? [];
   const existing = items.find((i) => i.itemId === item.id);
 
   if (existing) {
+    if (existing.qty >= stock) {
+      return bot.sendMessage(
+        chatId,
+        `Only ${stock} ${item.name}(s) available — you already have ${existing.qty} in your cart.`,
+      );
+    }
     existing.qty += 1;
     await upsertCart(userId, vendorId, items, recalcTotal(items));
     return sendCartSummary(bot, chatId, userId, vendorId);
@@ -181,6 +191,7 @@ export async function handleSelectItem(
   const ui = getUiState(chatId);
   ui.pendingItem = item;
   ui.vendorId = vendorId;
+  ui.pendingItemStock = stock;
 
   await bot.sendMessage(chatId, `How many ${item.name}?`, {
     reply_markup: {
@@ -278,8 +289,21 @@ export async function handleIncreaseQty(
   const item = cartData.items.find((i) => i.itemId === itemId);
   if (!item) return;
 
+  const stock = await getItemStock(itemId);
+  if (item.qty >= stock) {
+    return bot.sendMessage(
+      chatId,
+      `Only ${stock} ${item.name}(s) available — you already have the maximum in your cart.`,
+    );
+  }
+
   item.qty += 1;
-  await upsertCart(userId, vendorId, cartData.items, recalcTotal(cartData.items));
+  await upsertCart(
+    userId,
+    vendorId,
+    cartData.items,
+    recalcTotal(cartData.items),
+  );
   await sendCartSummary(bot, chatId, userId, vendorId);
 }
 
@@ -376,16 +400,23 @@ export async function handleCheckout(
     return;
   }
 
+  const searchMsg = await bot.sendMessage(
+    chatId,
+    "🔍 Searching for riders near your location...",
+  );
+
   const nearbyRiders = await getNearbyRiders(
     user.default_lat,
     user.default_lng,
     10,
   );
 
+  await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
+
   if (nearbyRiders.length === 0) {
     await bot.sendMessage(
       chatId,
-      "No riders available within 10km of your location right now. Please try again soon.",
+      "😔 No riders available near you right now.\nPlease try again in a few minutes.",
     );
     return;
   }
@@ -408,6 +439,8 @@ export async function handleCheckout(
     `&chat_id=${chatId}` +
     `&user_id=${userId}` +
     `&vendor_id=${vendorId}`;
+
+  console.log(webAppUrl);
 
   await bot.sendMessage(
     chatId,
@@ -488,7 +521,7 @@ export async function callASAP(
     };
 
     const response = await axios.post(
-      "http://localhost:4000/ride-request",
+      `${getServerUrl()}/ride-request`,
       payload,
     );
 

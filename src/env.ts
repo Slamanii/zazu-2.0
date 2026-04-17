@@ -13,3 +13,5 @@ export const PAYSTACK_PUBLIC_KEY =
 
 export const NGROK_AUTHTOKEN =
   "2o10fY0VwunBigvhWJHIVzPLPu7_2QPodTpkoy2qCsgsSyCkU";
+
+export const ASAP_BASE_URL = process.env.ASAP_BASE_URL ?? "http://127.0.0.1:8080";

@@ -1,6 +1,6 @@
 import TelegramBot, { CallbackQuery, Message } from "node-telegram-bot-api";
 import { mainUserStore } from "../freezer/mainUserStore";
-import { createPaystackLink } from "../api/payment/paystack";
+import { createPaystackLink } from "../../api/payment/paystack";
 import { updatePaystackRef } from "../db/queries";
 import { ZAZU_MAIN_BOT } from "../env";
 

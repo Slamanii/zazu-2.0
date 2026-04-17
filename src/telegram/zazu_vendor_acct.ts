@@ -180,11 +180,10 @@ bot.on("message", async (msg) => {
         await updatePaystackRef(Number(orderId), reference);
         await updatePaymentStatus(Number(orderId), reference, "success");
         await updateOrderStatus(Number(orderId), "paid");
-        await upsertCart(userId, vendor_info.vendor_id, [], 0, "checked_out");
 
         await bot.sendMessage(
           chatId,
-          "✅ Payment confirmed! Finding you a rider...",
+          "✅ Payment confirmed! Waiting for a rider to accept order...",
         );
 
         const userDb = await getUserByTelegramId(userId);
@@ -216,6 +215,8 @@ bot.on("message", async (msg) => {
           orderId,
           vendor_info.vendor_id,
         );
+
+        await upsertCart(userId, vendor_info.vendor_id, [], 0, "checked_out");
 
         if (orderPayload) {
           await bot.sendMessage(
@@ -252,12 +253,31 @@ bot.on("message", async (msg) => {
 
     const item = ui.pendingItem;
     const vendorId = ui.vendorId!;
-    delete ui.pendingItem;
-    delete ui.vendorId;
+    const stock = ui.pendingItemStock ?? Infinity;
 
     const cartData = await getCart(userId, vendorId);
     const items = cartData?.items ?? [];
     const existing = items.find((i) => i.itemId === item.id);
+    const currentQty = existing?.qty ?? 0;
+
+    if (currentQty + qty > stock) {
+      const canAdd = stock - currentQty;
+      if (canAdd <= 0) {
+        return bot.sendMessage(
+          chatId,
+          `You already have the maximum available (${stock}) in your cart.`,
+        );
+      }
+      return bot.sendMessage(
+        chatId,
+        `Only ${stock} ${item.name}(s) available. You can add at most ${canAdd} more.`,
+      );
+    }
+
+    delete ui.pendingItem;
+    delete ui.vendorId;
+    delete ui.pendingItemStock;
+
     if (existing) {
       existing.qty += qty;
     } else {
@@ -381,7 +401,7 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
   if (!param?.startsWith("paid_")) return;
 
   const orderId = param.replace("paid_", "");
-  const data = await getPaymentStatus(orderId);
+  const data = await getPaymentStatus(Number(orderId));
 
   if (data?.status === "success") {
     await bot.sendMessage(chatId, "Payment Confirmed");

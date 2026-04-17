@@ -52,6 +52,15 @@ export async function getCategoriesWithItems(vendorId: number) {
   })) as Category[];
 }
 
+export async function getItemStock(itemId: number): Promise<number> {
+  const { data } = await supabase
+    .from("telegram_vendor_item")
+    .select("stock")
+    .eq("id", itemId)
+    .single();
+  return data?.stock ?? 0;
+}
+
 // ---------- Users ----------
 
 export async function getUserByTelegramId(telegramId: number) {

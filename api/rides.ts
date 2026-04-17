@@ -1,5 +1,6 @@
 import { Router } from "express";
 import axios from "axios";
+import { ASAP_BASE_URL } from "../src/env";
 
 const router = Router();
 
@@ -10,7 +11,7 @@ router.post("/ride-preflight", async (req, res) => {
 
   try {
     const preflightResponse = await axios.post(
-      "http://127.0.0.1:8080/ride-request",
+      `${ASAP_BASE_URL}/ride-request`,
       payload,
     );
 
@@ -31,16 +32,15 @@ router.post("/ride-request", async (req, res) => {
 
   try {
     const rideResponse = await axios.post(
-      "http://127.0.0.1:8080/ride-request",
+      `${ASAP_BASE_URL}/ride-request`,
       payload,
     );
 
     const rideId = rideResponse.data.request_id;
 
     const driverResponse = await axios.get(
-      `http://127.0.0.1:8080/assign-driver?ride_id=${rideId}`,
+      `${ASAP_BASE_URL}/assign-driver?ride_id=${rideId}`,
     );
-
     res.json({
       success: true,
       ride: rideResponse.data,

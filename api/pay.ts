@@ -1,8 +1,8 @@
 import { Router } from "express";
 import axios from "axios";
 import crypto from "crypto";
-import { PAYSTACK_SECRET_KEY } from "../env";
-import { pendingPayments } from "../freezer/pendingPayments";
+import { PAYSTACK_SECRET_KEY } from "../src/env";
+import { pendingPayments } from "../src/freezer/pendingPayments";
 
 const router = Router();
 
@@ -65,7 +65,7 @@ router.post("/paystack-webhook", async (req, res) => {
 
   pendingPayments.delete(reference);
 
-  const { bot } = await import("../telegram/zazu_vendor_acct");
+  const { bot } = await import("../src/telegram/zazu_vendor_acct");
   await bot.sendMessage(pending.chatId, `✅ Payment confirmed! Your order is being prepared.`);
 });
 

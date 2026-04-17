@@ -7,6 +7,7 @@ const orderId = params.get("order_id");
 const email = params.get("email");
 const chatId = params.get("chat_id");
 const userId = params.get("user_id");
+const vendorId = params.get("vendor_id");
 
 document.getElementById("amount-text").textContent =
   `₦${Number(amount).toLocaleString()}`;
@@ -27,6 +28,7 @@ fetch("/pay", {
     order_id: orderId,
     chat_id: chatId,
     user_id: userId,
+    vendor_id: vendorId,
   }),
 })
   .then((r) => r.json())

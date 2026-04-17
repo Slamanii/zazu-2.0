@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { vendorStore } from "../freezer/vendorState";
+import { vendorStore } from "../src/freezer/vendorState";
 
 const router = Router();
 

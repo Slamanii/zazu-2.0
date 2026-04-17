@@ -2,6 +2,7 @@ import { Item } from '../types'
 
 interface UiState {
   pendingItem?: Item
+  pendingItemStock?: number
   cartMessageId?: number
   vendorId?: number
 }
