@@ -2,13 +2,17 @@ import { getVendorById, getCategoriesWithItems } from "../db/queries";
 import { VendorState } from "../types";
 import { localUserStore } from "./localUserStore";
 
-export let vendorState: VendorState | null = null;
+export const vendorStore = new Map<number, VendorState>();
 
-export async function loadVendorState(vendorId: string) {
+export function getVendorState(vendorId: number): VendorState | undefined {
+  return vendorStore.get(vendorId);
+}
+
+export async function loadVendorState(vendorId: number): Promise<VendorState> {
   const vendor = await getVendorById(vendorId);
   const categories = await getCategoriesWithItems(vendorId);
 
-  vendorState = {
+  const state: VendorState = {
     vendorId,
     lat: vendor.lat,
     lng: vendor.lng,
@@ -17,27 +21,22 @@ export async function loadVendorState(vendorId: string) {
     categories,
     lastUpdated: new Date(),
   };
+
+  vendorStore.set(vendorId, state);
+  return state;
 }
 
-export async function buildPreflightPayload(userId: number) {
+export async function buildPreflightPayload(vendorId: number, userId: number) {
+  const vendorState = getVendorState(vendorId);
   const user = await localUserStore.getUser(userId);
 
   if (!user?.location) throw new Error("User location missing");
-
   if (!vendorState) throw new Error("Vendor state missing");
-
-  const pickupPoint = {
-    lat: vendorState.lat,
-    lng: vendorState.lng,
-  };
-  const dropoffPoint = { lat: user.location.lat, lng: user.location.lng };
-
-  const rideType = vendorState.acct_type || "default"; //make into string
 
   return {
     rider_id: userId,
-    pick_up: pickupPoint,
-    drop_off: dropoffPoint,
-    ride_type: rideType,
+    pick_up: { lat: vendorState.lat, lng: vendorState.lng },
+    drop_off: { lat: user.location.lat, lng: user.location.lng },
+    ride_type: vendorState.acct_type || "default",
   };
 }

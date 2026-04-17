@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Payment</title>
+    <script src="https://telegram.org/js/telegram-web-app.js?62"></script>
+    <script src="https://js.paystack.co/v2/inline.js"></script>
+    <link rel="stylesheet" href="css/pay.css" />
+  </head>
+  <body>
+    <div class="card">
+      <h2 id="amount-text">Loading...</h2>
+      <p id="order-text"></p>
+      <button id="pay-btn" disabled>Pay Now</button>
+      <div id="status"></div>
+    </div>
+
+    <script src="js/pay.js"></script>
+
+    <!-- DEV ONLY: remove before going live -->
+    <div
+      style="
+        margin-top: 32px;
+        text-align: center;
+        font-size: 12px;
+        opacity: 0.5;
+      "
+    >
+      <a id="test-link">Open test page</a>
+    </div>
+    <script>
+      const testUrl = `${window.location.origin}/pay.html?ngrok-skip-browser-warning=true&order_id=1&amount=4500&email=test@gmail.com&chat_id=123&user_id=456&vendor_id=1`;
+      const link = document.getElementById("test-link");
+      link.href = testUrl;
+      link.title = testUrl;
+    </script>
+  </body>
+</html>

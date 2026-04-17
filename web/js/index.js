@@ -1,5 +1,5 @@
 // ── Config ──────────────────────────────────────────────
-const API_BASE = "https://907a-2605-59c0-e3b-2e00-7591-aa1c-803b-e26.ngrok-free.app"
+const API_BASE = window.location.origin
 
 // ── Telegram SDK ────────────────────────────────────────
 const tg = window.Telegram?.WebApp

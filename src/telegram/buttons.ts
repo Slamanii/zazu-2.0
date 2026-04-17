@@ -1,129 +1,75 @@
 import TelegramBot from "node-telegram-bot-api";
-import { handlePlaceOrder, handleSetLocation, handleShowMenu, handleOpenCategory, handleSelectItem, handleDecreaseQty, handleIncreaseQty, handleRemoveItem, handleCheckout, handlePayStart  } from "./handlers"
-import { VENDOR_ID } from "../env"
+import {
+  handlePlaceOrder,
+  handleSetLocation,
+  handleShowMenu,
+  handleOpenCategory,
+  handleSelectItem,
+  handleDecreaseQty,
+  handleIncreaseQty,
+  handleRemoveItem,
+  handleCheckout,
+  handlePayStart,
+} from "./handlers";
 
+export async function onButtonClick(
+  bot: TelegramBot,
+  query: any,
+  vendorId: number,
+) {
+  const data = query.data;
+  const chatId = query.message.chat.id;
+  const userId = query.from.id;
+  const email = query.from.email;
 
-export async function onButtonClick(bot: TelegramBot, query: any) {
+  if (data === "SET_LOCATION") {
+    return handleSetLocation(bot, chatId, query);
+  }
 
-    const data = query.data
-    const chatId = query.message.chat.id
-    const userId = query.from.id
-    const email = query.from.email
+  if (data === "PLACE_ORDER") {
+    return handlePlaceOrder(bot, chatId, query);
+  }
 
-    if (data === "SET_LOCATION") {
-        return handleSetLocation(bot, chatId, query)
-    }
+  if (data === "SHOW_MENU") {
+    return handleShowMenu(bot, chatId, vendorId);
+  }
 
-    if (data === "PLACE_ORDER") {
-        return handlePlaceOrder(bot, chatId, query)
-    }
+  if (data.startsWith("OPEN_CATEGORY:")) {
+    const categoryId = Number(data.split(":")[1]);
+    return handleOpenCategory(bot, chatId, vendorId, categoryId);
+  }
 
-    if (data === "SHOW_MENU") {
-        return handleShowMenu(bot, chatId)
-    }
+  if (data.startsWith("ADD_TO_CART:")) {
+    const itemId = Number(data.split(":")[1]);
+    return handleSelectItem(bot, chatId, userId, vendorId, itemId);
+  }
 
-    if (data.startsWith("OPEN_CATEGORY:")) {
-        const categoryId = data.split(":")[1]
-        return handleOpenCategory(bot, chatId, categoryId)
-    }
+  if (data.startsWith("CHECKOUT")) {
+    return handleCheckout(bot, chatId, userId, vendorId);
+  }
 
-    if (data.startsWith("ADD_TO_CART:")) {
-        const itemId = data.split(":")[1]
-        return handleSelectItem(bot, chatId, userId, itemId)
-    }
+  if (data.startsWith("REMOVE:")) {
+    const itemId = Number(data.split(":")[1]);
+    return handleRemoveItem(bot, chatId, userId, vendorId, itemId);
+  }
 
-    if (data.startsWith("CHECKOUT")) {
-        return handleCheckout(bot, chatId, userId, VENDOR_ID)
-    }
-    
-    if (data.startsWith("REMOVE:")) {
-        const itemId = data.split(":")[1]
-        return handleRemoveItem(bot, chatId, userId, itemId)
-    }
+  if (data.startsWith("INCREASE:")) {
+    const itemId = Number(data.split(":")[1]);
+    return handleIncreaseQty(bot, chatId, userId, vendorId, itemId);
+  }
 
-    if (data.startsWith("INCREASE:")) {
-        const itemId = data.split(":")[1]
-        return handleIncreaseQty(bot, chatId, userId, itemId)
-    }
+  if (data.startsWith("DECREASE:")) {
+    const itemId = Number(data.split(":")[1]);
+    return handleDecreaseQty(bot, chatId, userId, vendorId, itemId);
+  }
 
-    if (data.startsWith("DECREASE:")) {
-        const itemId = data.split(":")[1]
-        return handleDecreaseQty(bot, chatId, userId, itemId)
-    }
+  if (data.startsWith("PAYSTACK:")) {
+    const orderId = data.split(":")[1];
+    return handlePayStart(bot, chatId, userId, email, vendorId, orderId, "paystack");
+  }
 
-    if (data.startsWith("PAYSTACK:")) {
-        const orderId = data.split(":")[1]
-
-        return handlePayStart(
-            bot,
-            chatId,
-            userId,
-            email,
-            VENDOR_ID,
-            orderId,
-            "paystack"
-        )
-    }
-
-    if (data.startsWith("SOLPAY:")) {
-        const orderId = data.split(":")[1]
-
-        return handlePayStart(
-            bot,
-            chatId,
-            userId,
-            email,
-            VENDOR_ID,
-            orderId,
-            "sol"
-        )
-    }
+  if (data.startsWith("SOLPAY:")) {
+    const orderId = data.split(":")[1];
+    return handlePayStart(bot, chatId, userId, email, vendorId, orderId, "sol");
+  }
 }
-
-    {/*
-        const action = query.callback_data;
-    const chatId = query.message.chat.id;
-    const categoryId = query.data.split(":")[1]
-    const itemId = query.data.split(":")[1]
-
-    switch (action) {
-
-        case "SET_LOCATION":
-            return handleSetLocation(bot, chatId, query)
-
-        case "PLACE_ORDER":
-            return handlePlaceOrder(bot, chatId, query)
-
-        case "SHOW MENU":
-            return handleShowMenu(bot, chatId)
-
-        case "OPEN_CATEGORY:" + categoryId:
-            return handleOpenCategory(bot, chatId, categoryId)
-                
-        case "ADD_TO_CART:" + itemId: 
-            return handleSelectItem(bot, chatId, itemId, userId)
-
-
-            case "LOCATION":
-                return bot.sendMessage(chatId, "Please share your location:")
-
-            case "MENU":
-                return bot.sendMessage(chatId, "Here is the menu:")
-
-            case "MY_ORDERS":
-                return bot.sendMessage(chatId, "Here are your orders:")
-
-            case "SETTINGS":
-                return bot.sendMessage(chatId, "Here are your settings:")
-
-            case "HELP":
-                return bot.sendMessage(chatId, "How can I help you?")
-
-            case "WALLETS":
-                return bot.sendMessage(chatId, "Here are your wallets:")
-
-        default:
-            return bot.sendMessage(chatId, "Unknown action.")
-
-    }
-*/}

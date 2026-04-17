@@ -1,18 +1,31 @@
 import { Buffer } from "buffer";
-import { insertOrder, insertPayment, getOrderById } from "../db/queries";
+import {
+  insertOrder,
+  insertPayment,
+  getOrderById,
+  getNearbyRiders,
+  upsertUserPhone,
+  upsertUserLocation,
+  getUserByTelegramId,
+  upsertCart,
+  getCart,
+} from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { localUserStore } from "../freezer/localUserStore";
 import { sendLocationToZazuMain } from "./zazu_main_client";
 import { ZAZU_MAIN_BOT } from "../env";
-import { showMenuButton } from "./keyboard";
-import { preflightResults } from "./zazu_vendor_acct";
-import { vendorState } from "../freezer/vendorState";
-import { VendorState, CartState } from "../types";
-import { userCartState } from "../freezer/userCartStore";
+import { getServerUrl } from "../ngrok";
+import { VendorState, CartItem, CartState } from "../types";
+import { getUiState } from "../freezer/userCartStore";
+import { getVendorState } from "../freezer/vendorState";
 import axios from "axios";
 
-function findItemById(state: VendorState, id: string) {
+function findItemById(state: VendorState, id: number) {
   return state.categories.flatMap((c) => c.item).find((i) => i.id === id);
+}
+
+function recalcTotal(items: CartItem[]): number {
+  return items.reduce((sum, i) => sum + i.price * i.qty, 0);
 }
 
 export async function handleSetLocation(
@@ -41,6 +54,15 @@ export async function handleSetLocation(
   });
 }
 
+export async function savePhoneNumberFlow(
+  userId: number,
+  phone: string,
+  name: string,
+) {
+  await localUserStore.setPhone(userId, phone);
+  await upsertUserPhone(userId, phone, name);
+}
+
 export async function saveLocationFlow(
   bot: TelegramBot,
   chatId: number,
@@ -49,13 +71,20 @@ export async function saveLocationFlow(
   lng: number,
 ) {
   await localUserStore.setLocation(userId, { lat, lng });
+  await upsertUserLocation(userId, lat, lng);
 
   await sendLocationToZazuMain({ telegramId: userId, lat, lng });
 
-  await bot.sendMessage(chatId, "Location saved!", showMenuButton);
+  await bot.sendMessage(chatId, "Location saved!");
 }
 
-export async function handleShowMenu(bot: TelegramBot, chatId: number) {
+export async function handleShowMenu(
+  bot: TelegramBot,
+  chatId: number,
+  vendorId: number,
+) {
+  const vendorState = getVendorState(vendorId);
+
   if (!vendorState) {
     return bot.sendMessage(chatId, "Menu loading...");
   }
@@ -72,8 +101,11 @@ export async function handleShowMenu(bot: TelegramBot, chatId: number) {
 export async function handleOpenCategory(
   bot: TelegramBot,
   chatId: number,
-  categoryId: string,
+  vendorId: number,
+  categoryId: number,
 ) {
+  const vendorState = getVendorState(vendorId);
+
   if (!vendorState) {
     return bot.sendMessage(chatId, "Menu loading");
   }
@@ -84,52 +116,71 @@ export async function handleOpenCategory(
     return bot.sendMessage(chatId, "category not found");
   }
 
-  const keyboard = category.item.map((item) => [
-    {
-      text: `${item.name} ₦${item.price}`,
-      callback_data: `ADD_TO_CART:${item.id}`,
-    },
-  ]);
+  for (const item of category.item) {
+    const itemKeyboard = {
+      inline_keyboard: [
+        [
+          {
+            text: `Add to Cart — ₦${item.price}`,
+            callback_data: `ADD_TO_CART:${item.id}`,
+          },
+        ],
+      ],
+    };
 
-  keyboard.push([{ text: "Back", callback_data: "SHOW_MENU" }]);
-
-  await bot.sendMessage(chatId, "Select items", {
-    reply_markup: {
-      inline_keyboard: keyboard,
-    },
-  });
+    if (item.image_url) {
+      await bot.sendDocument(
+        chatId,
+        item.image_url,
+        {
+          caption: `*${item.name}*\n₦${item.price}`,
+          parse_mode: "Markdown",
+          reply_markup: itemKeyboard,
+        },
+        {
+          filename: `${item.name}.jpg`,
+          contentType: "image/jpeg",
+        },
+      );
+    } else {
+      await bot.sendMessage(chatId, `*${item.name}*\n₦${item.price}`, {
+        parse_mode: "Markdown",
+        reply_markup: itemKeyboard,
+      });
+    }
+  }
 }
 
 export async function handleSelectItem(
   bot: TelegramBot,
   chatId: number,
   userId: number,
-  itemId: string,
+  vendorId: number,
+  itemId: number,
 ) {
+  const vendorState = getVendorState(vendorId);
   if (!vendorState) return;
 
   const item = findItemById(vendorState, itemId);
-
   if (!item) return;
 
   if (item.stock <= 5) {
     return bot.sendMessage(chatId, "Out of Stock");
   }
 
-  let state = userCartState.get(chatId);
+  const cartData = await getCart(userId, vendorId);
+  const items: CartItem[] = cartData?.items ?? [];
+  const existing = items.find((i) => i.itemId === item.id);
 
-  if (!state) {
-    state = {
-      userId,
-      cart: {
-        items: [],
-        total: 0,
-      },
-    };
-    userCartState.set(chatId, state);
+  if (existing) {
+    existing.qty += 1;
+    await upsertCart(userId, vendorId, items, recalcTotal(items));
+    return sendCartSummary(bot, chatId, userId, vendorId);
   }
 
-  state.pendingItem = item;
+  const ui = getUiState(chatId);
+  ui.pendingItem = item;
+  ui.vendorId = vendorId;
 
   await bot.sendMessage(chatId, `How many ${item.name}?`, {
     reply_markup: {
@@ -138,7 +189,6 @@ export async function handleSelectItem(
         [{ text: "5" }, { text: "10" }],
         [{ text: "Cancel" }],
       ],
-
       resize_keyboard: true,
       one_time_keyboard: true,
     },
@@ -149,105 +199,117 @@ export async function sendCartSummary(
   bot: TelegramBot,
   chatId: number,
   userId: number,
+  vendorId: number,
 ) {
-  let state = userCartState.get(chatId);
+  const cartData = await getCart(userId, vendorId);
 
-  if (!state) return;
+  if (!cartData || cartData.items.length === 0) {
+    return bot.sendMessage(chatId, "Your cart is empty.");
+  }
 
-  const cart = state.cart;
-
-  let text = "🛒 Cart:\n\n";
+  const items = cartData.items;
   let keyboard: any[] = [];
 
-  for (const c of cart.items) {
-    text += `${c.name} x${c.qty} = ₦${c.price * c.qty}\n`;
+  const rows = items.map((c) => ({
+    left: `${c.name} x${c.qty}`,
+    right: `₦${(c.price * c.qty).toLocaleString()}`,
+    item: c,
+  }));
 
+  const maxLeft = Math.max(...rows.map((r) => r.left.length));
+  const lines = rows
+    .map((r) => `${r.left.padEnd(maxLeft)}  = ${r.right}`)
+    .join("\n");
+
+  let text = `🛒 Cart:\n\n\`\`\`\n${lines}\n\`\`\``;
+
+  for (const { item: c } of rows) {
     keyboard.push([
+      { text: c.name, callback_data: "NOOP" },
       { text: "➖", callback_data: `DECREASE:${c.itemId}` },
       { text: "➕", callback_data: `INCREASE:${c.itemId}` },
       { text: "❌ Remove", callback_data: `REMOVE:${c.itemId}` },
     ]);
   }
 
-  text += `\nTotal: ₦${cart.total}`;
-
+  text += `\n\nTotal: ₦${cartData.total.toLocaleString()}`;
   keyboard.push([{ text: "Checkout", callback_data: "CHECKOUT" }]);
 
-  await bot.sendMessage(chatId, text, {
-    reply_markup: {
-      inline_keyboard: keyboard,
-    },
+  const ui = getUiState(chatId);
+
+  if (ui.cartMessageId) {
+    await bot.deleteMessage(chatId, ui.cartMessageId).catch(() => {});
+    ui.cartMessageId = undefined;
+  }
+
+  const sent = await bot.sendMessage(chatId, text, {
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: keyboard },
   });
+
+  ui.cartMessageId = sent.message_id;
 }
 
 export async function handleRemoveItem(
   bot: TelegramBot,
   chatId: number,
   userId: number,
-  itemId: string,
+  vendorId: number,
+  itemId: number,
 ) {
-  const state = userCartState.get(chatId);
-  if (!state) return;
+  const cartData = await getCart(userId, vendorId);
+  if (!cartData) return;
 
-  state.cart.items = state.cart.items.filter((i) => i.itemId !== itemId);
-
-  state.cart.total = state.cart.items.reduce(
-    (sum, i) => sum + i.price * i.qty,
-    0,
-  );
-
-  await sendCartSummary(bot, chatId, userId);
+  const items = cartData.items.filter((i) => i.itemId !== itemId);
+  await upsertCart(userId, vendorId, items, recalcTotal(items));
+  await sendCartSummary(bot, chatId, userId, vendorId);
 }
 
 export async function handleIncreaseQty(
   bot: TelegramBot,
   chatId: number,
   userId: number,
-  itemId: string,
+  vendorId: number,
+  itemId: number,
 ) {
-  const state = userCartState.get(chatId);
-  if (!state) return;
+  const cartData = await getCart(userId, vendorId);
+  if (!cartData) return;
 
-  const item = state.cart.items.find((i) => i.itemId === itemId);
+  const item = cartData.items.find((i) => i.itemId === itemId);
   if (!item) return;
 
   item.qty += 1;
-
-  state.cart.total += item.price;
-
-  await sendCartSummary(bot, chatId, userId);
+  await upsertCart(userId, vendorId, cartData.items, recalcTotal(cartData.items));
+  await sendCartSummary(bot, chatId, userId, vendorId);
 }
 
 export async function handleDecreaseQty(
   bot: TelegramBot,
   chatId: number,
   userId: number,
-  itemId: string,
+  vendorId: number,
+  itemId: number,
 ) {
-  const state = userCartState.get(chatId);
-  if (!state) return;
+  const cartData = await getCart(userId, vendorId);
+  if (!cartData) return;
 
-  const item = state.cart.items.find((i) => i.itemId === itemId);
+  const item = cartData.items.find((i) => i.itemId === itemId);
   if (!item) return;
 
   item.qty -= 1;
+  const items =
+    item.qty <= 0
+      ? cartData.items.filter((i) => i.itemId !== itemId)
+      : cartData.items;
 
-  if (item.qty <= 0) {
-    state.cart.items = state.cart.items.filter((i) => i.itemId !== itemId);
-  }
-
-  state.cart.total = state.cart.items.reduce(
-    (sum, i) => sum + i.price * i.qty,
-    0,
-  );
-
-  await sendCartSummary(bot, chatId, userId);
+  await upsertCart(userId, vendorId, items, recalcTotal(items));
+  await sendCartSummary(bot, chatId, userId, vendorId);
 }
 
 export async function handlePlaceOrder(
   bot: TelegramBot,
   chatId: number,
-  query: CallbackQuery,
+  _query: CallbackQuery,
 ) {
   await bot.sendMessage(chatId, "please enter your delivery address:");
 }
@@ -259,8 +321,8 @@ export async function constructOrder({
   deliveryPrice,
 }: {
   userId: number;
-  vendorId: string;
-  cart: CartState; //check this
+  vendorId: number;
+  cart: CartState;
   deliveryPrice: number;
 }) {
   const subtotal = cart.items.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -289,41 +351,74 @@ export async function handleCheckout(
   bot: TelegramBot,
   chatId: number,
   userId: number,
-  vendorId: string,
+  vendorId: number,
 ) {
-  const cart = userCartState.get(chatId)?.cart;
-  if (!cart || cart.items.length === 0) {
+  const cartData = await getCart(userId, vendorId);
+  if (!cartData || cartData.items.length === 0) {
     await bot.sendMessage(chatId, "Your cart is empty 🛒");
     return;
   }
 
-  const preflight = preflightResults.get(userId);
-  if (!preflight || !preflight.canServe) {
+  const user = await getUserByTelegramId(userId);
+
+  if (!user?.default_lat || !user?.default_lng) {
     await bot.sendMessage(
       chatId,
-      "Cannot construct order: no delivery available 😔",
+      "Please share your location first so we can find a rider near you.",
+      {
+        reply_markup: {
+          keyboard: [[{ text: "Share Location", request_location: true }]],
+          one_time_keyboard: true,
+          resize_keyboard: true,
+        },
+      },
     );
     return;
   }
 
-  // Construct order using preflight data
+  const nearbyRiders = await getNearbyRiders(
+    user.default_lat,
+    user.default_lng,
+    10,
+  );
+
+  if (nearbyRiders.length === 0) {
+    await bot.sendMessage(
+      chatId,
+      "No riders available within 10km of your location right now. Please try again soon.",
+    );
+    return;
+  }
+
+  const email = `${userId}@zazu.app`;
+
   const order = await constructOrder({
     userId,
     vendorId,
-    cart,
-    deliveryPrice: preflight.estimatedPrice,
+    cart: cartData,
+    deliveryPrice: 0,
   });
 
-  // Send Pay button
+  const webAppUrl =
+    `${getServerUrl()}/pay.html` +
+    `?ngrok-skip-browser-warning=true` +
+    `&order_id=${order.id}` +
+    `&amount=${order.total}` +
+    `&email=${encodeURIComponent(email)}` +
+    `&chat_id=${chatId}` +
+    `&user_id=${userId}` +
+    `&vendor_id=${vendorId}`;
+
   await bot.sendMessage(
     chatId,
-    ` Order ready! Total: ₦${order.total}\nPay now:`,
+    `Order ready! Total: ₦${order.total}\nTap to pay:`,
     {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: "Pay: PAYSTACK", callback_data: `PAYSTACK:${order.id}` }],
-          [{ text: "Pay: SOLPAY", callback_data: `SOLPAY:${order.id}` }],
+        keyboard: [
+          [{ text: "💳 Pay with Paystack", web_app: { url: webAppUrl } }],
         ],
+        one_time_keyboard: true,
+        resize_keyboard: true,
       },
     },
   );
@@ -334,7 +429,7 @@ export async function handlePayStart(
   chatId: number,
   userId: number,
   email: string,
-  vendorId: string,
+  vendorId: number,
   orderId: string,
   method: "sol" | "paystack",
 ) {
@@ -365,29 +460,18 @@ export async function callASAP(
   userPhoneNumber: string | undefined,
   vendorPhoneNumber: string,
   orderId: string,
+  vendorId: number,
 ) {
-  let state = userCartState.get(chatId);
-
-  if (!state) {
-    state = {
-      userId,
-      cart: {
-        items: [],
-        total: 0,
-      },
-    };
-    userCartState.set(chatId, state);
-  }
-
-  const orderData = await getOrderById(orderId);
+  const cartData = await getCart(userId, vendorId);
+  const orderData = await getOrderById(Number(orderId));
 
   try {
-    const itemDetails = state.cart.items.map((item) => ({
+    const itemDetails = (cartData?.items ?? []).map((item: CartItem) => ({
       name: item.name,
       price: item.price,
-      dimensions: [4.0, 4.0, 4.0], // default for vendor
+      dimensions: [4.0, 4.0, 4.0],
       quantity: item.qty,
-      weight: 3.0, // default or calculated
+      weight: 3.0,
     }));
 
     const payload = {

@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { Category } from "../types";
+import { Category, CartItem } from "../types";
 
 // ---------- Bot ----------
 
@@ -16,7 +16,7 @@ export async function getVendorByBotUsername(botUsername: string) {
 
 // ---------- Vendor ----------
 
-export async function getVendorById(vendorId: string) {
+export async function getVendorById(vendorId: number) {
   const { data, error } = await supabase
     .from("telegram_vendor")
     .select("*")
@@ -26,14 +26,14 @@ export async function getVendorById(vendorId: string) {
   return data;
 }
 
-export async function getCategoriesWithItems(vendorId: string) {
+export async function getCategoriesWithItems(vendorId: number) {
   const { data, error } = await supabase
-    .from("telegram_categories")
+    .from("telegram_vendor_menu")
     .select(
       `
       id,
-      name,
-      item (
+      category_name,
+      telegram_vendor_item (
         id,
         name,
         price,
@@ -44,14 +44,59 @@ export async function getCategoriesWithItems(vendorId: string) {
     )
     .eq("vendor_id", vendorId);
   if (error) throw error;
-  return data as Category[];
+
+  return data.map((cat) => ({
+    id: cat.id,
+    name: cat.category_name,
+    item: cat.telegram_vendor_item ?? [],
+  })) as Category[];
+}
+
+// ---------- Users ----------
+
+export async function getUserByTelegramId(telegramId: number) {
+  const { data, error } = await supabase
+    .from("telegram_custom_users")
+    .select("telegram_user_id, name, phone, default_lat, default_lng")
+    .eq("telegram_user_id", telegramId)
+    .single();
+  if (error) return null;
+  return data;
+}
+
+async function ensureUser(telegramId: number) {
+  const existing = await getUserByTelegramId(telegramId);
+  if (!existing) {
+    const { error } = await supabase
+      .from("telegram_custom_users")
+      .insert({ telegram_user_id: telegramId });
+    if (error) throw error;
+  }
+}
+
+export async function upsertUserPhone(telegramId: number, phone: string, name: string) {
+  await ensureUser(telegramId);
+  const { error } = await supabase
+    .from("telegram_custom_users")
+    .update({ phone, name })
+    .eq("telegram_user_id", telegramId);
+  if (error) throw error;
+}
+
+export async function upsertUserLocation(telegramId: number, lat: number, lng: number) {
+  await ensureUser(telegramId);
+  const { error } = await supabase
+    .from("telegram_custom_users")
+    .update({ default_lat: lat, default_lng: lng })
+    .eq("telegram_user_id", telegramId);
+  if (error) throw error;
 }
 
 // ---------- Orders ----------
 
 export async function insertOrder(order: {
   user_id: number;
-  vendor_id: string;
+  vendor_id: number;
   subtotal: number;
   delivery_fee: number;
   total: number;
@@ -67,7 +112,7 @@ export async function insertOrder(order: {
   return data;
 }
 
-export async function getOrderById(orderId: string) {
+export async function getOrderById(orderId: number) {
   const { data, error } = await supabase
     .from("telegram_orders")
     .select("*")
@@ -76,7 +121,7 @@ export async function getOrderById(orderId: string) {
   return data;
 }
 
-export async function updateOrderStatus(orderId: string, status: string) {
+export async function updateOrderStatus(orderId: number, status: string) {
   const { error } = await supabase
     .from("telegram_orders")
     .update({ status })
@@ -87,7 +132,7 @@ export async function updateOrderStatus(orderId: string, status: string) {
 // ---------- Payments ----------
 
 export async function insertPayment(payment: {
-  order_id: string;
+  order_id: number;
   paystack_ref: string;
   amount: number;
   status: string;
@@ -102,7 +147,7 @@ export async function insertPayment(payment: {
   return data;
 }
 
-export async function updatePaystackRef(orderId: string, paystackRef: string) {
+export async function updatePaystackRef(orderId: number, paystackRef: string) {
   const { error } = await supabase
     .from("telegram_payments")
     .update({ paystack_ref: paystackRef })
@@ -111,7 +156,7 @@ export async function updatePaystackRef(orderId: string, paystackRef: string) {
 }
 
 export async function updatePaymentStatus(
-  orderId: string,
+  orderId: number,
   paystackRef: string,
   status: string,
 ) {
@@ -123,7 +168,30 @@ export async function updatePaymentStatus(
   if (error) throw error;
 }
 
-export async function getPaymentStatus(orderId: string) {
+// ---------- Riders ----------
+
+// Returns riders whose distance to (userLat, userLng) is within radiusKm.
+// Uses the Haversine formula in SQL to avoid fetching all riders.
+export async function getNearbyRiders(
+  userLat: number,
+  userLng: number,
+  radiusKm: number = 10,
+) {
+  const { data, error } = await supabase.rpc("telegram_get_nearby_riders", {
+    user_lat: userLat,
+    user_lng: userLng,
+    radius_km: radiusKm,
+  });
+  if (error) throw error;
+  return data as {
+    id: string;
+    latitude: number;
+    longitude: number;
+    distance_km: number;
+  }[];
+}
+
+export async function getPaymentStatus(orderId: number) {
   const { data, error } = await supabase
     .from("telegram_payments")
     .select("status")
@@ -133,7 +201,34 @@ export async function getPaymentStatus(orderId: string) {
   return data;
 }
 
-export async function getPaymentByReference(reference: string) {
+export async function getCart(userId: number, vendorId: number) {
+  const { data } = await supabase
+    .from("telegram_cart")
+    .select("items, total, status")
+    .eq("user_id", userId)
+    .eq("vendor_id", vendorId)
+    .eq("status", "active")
+    .single();
+  return data as { items: CartItem[]; total: number; status: string } | null;
+}
+
+export async function upsertCart(
+  userId: number,
+  vendorId: number,
+  items: CartItem[],
+  total: number,
+  status: "active" | "checked_out" | "cancelled" = "active",
+) {
+  const { error } = await supabase
+    .from("telegram_cart")
+    .upsert(
+      { user_id: userId, vendor_id: vendorId, items, total, status },
+      { onConflict: "user_id,vendor_id" },
+    );
+  if (error) console.error("upsertCart error:", error.message);
+}
+
+export async function getPaymentByReference(reference: number) {
   const { data, error } = await supabase
     .from("telegram_payments")
     .select("zazu_sub_name")

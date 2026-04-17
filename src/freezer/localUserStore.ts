@@ -26,6 +26,17 @@ class LocalUserStore {
         this.users.set(telegramId, user)
     }
 
+    async setPhone(telegramId: number, phone: string) {
+        let user = await this.getUser(telegramId)
+
+        if (!user) {
+            user = await this.createUser(telegramId)
+        }
+
+        user.phone = phone
+        this.users.set(telegramId, user)
+    }
+
 }
 
 export const localUserStore = new LocalUserStore()

@@ -25,7 +25,7 @@ export interface MainUser {
 // ── Vendor ───────────────────────────────────────────────
 
 export interface Item {
-  id: string
+  id: number
   name: string
   price: number
   stock: number
@@ -33,13 +33,13 @@ export interface Item {
 }
 
 export interface Category {
-  id: string
+  id: number
   name: string
   item: Item[]
 }
 
 export interface VendorState {
-  vendorId: string
+  vendorId: number
   categories: Category[]
   lat: number
   lng: number
@@ -51,7 +51,7 @@ export interface VendorState {
 // ── Cart ─────────────────────────────────────────────────
 
 export interface CartItem {
-  itemId: string
+  itemId: number
   name: string
   price: number
   qty: number
@@ -64,6 +64,8 @@ export interface CartState {
 
 export interface UserCartState {
   userId: number
+  vendorId: number
   cart: CartState
   pendingItem?: Item
+  cartMessageId?: number
 }

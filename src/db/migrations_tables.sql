@@ -1,17 +1,50 @@
+-- Returns riders within radius_km of the given coordinates using Haversine formula
+CREATE OR REPLACE FUNCTION telegram_get_nearby_riders(
+  user_lat  DOUBLE PRECISION,
+  user_lng  DOUBLE PRECISION,
+  radius_km DOUBLE PRECISION DEFAULT 10
+)
+RETURNS TABLE (
+  id           UUID,
+  latitude     NUMERIC,
+  longitude    NUMERIC,
+  distance_km  DOUBLE PRECISION
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT id, latitude, longitude, distance_km
+  FROM (
+    SELECT
+      r.id,
+      r.latitude,
+      r.longitude,
+      ( 6371 * acos(
+          LEAST(1.0, cos(radians(user_lat)) * cos(radians(r.latitude::DOUBLE PRECISION))
+          * cos(radians(r.longitude::DOUBLE PRECISION) - radians(user_lng))
+          + sin(radians(user_lat)) * sin(radians(r.latitude::DOUBLE PRECISION)))
+      )) AS distance_km
+    FROM public.app_riders_current_status r
+    WHERE r.active_mode = 'rider'
+  ) sub
+  WHERE sub.distance_km <= radius_km
+  ORDER BY sub.distance_km ASC;
+$$;
+
 CREATE TABLE IF NOT EXISTS telegram_custom_users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    telegram_user_id BIGINT NOT NULL,
-    name TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    default_lat DOUBLE PRECISION NOT NULL,
-    default_lng DOUBLE PRECISION NOT NULL,
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    telegram_user_id BIGINT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    default_lat DOUBLE PRECISION,
+    default_lng DOUBLE PRECISION,
     order_history JSONB NOT NULL DEFAULT '{"pending": [], "completed": []}',
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'hold')),
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS telegram_vendor (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     address TEXT NOT NULL,
     open_time TIME NOT NULL,
@@ -30,58 +63,61 @@ CREATE TABLE IF NOT EXISTS telegram_vendor (
 );
 
 CREATE TABLE IF NOT EXISTS telegram_vendor_menu (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    vendor_id UUID REFERENCES telegram_vendor(id),
-    category_name TEXT NOT NULL DEFAULT 'Uncategorized'
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    vendor_id BIGINT NOT NULL REFERENCES telegram_vendor(id),
+    category_name TEXT NOT NULL DEFAULT 'Uncategorized',
+    CONSTRAINT unique_vendor_category UNIQUE (vendor_id, category_name)
 );
 
 CREATE TABLE IF NOT EXISTS telegram_vendor_item (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    vendor_id UUID REFERENCES telegram_vendor(id),
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    vendor_id BIGINT REFERENCES telegram_vendor(id),
     image_url TEXT,
     name TEXT NOT NULL,
-    menu_id UUID REFERENCES telegram_vendor_menu(id),
-    price INTEGER NOT NULL,
-    stock INTEGER NOT NULL DEFAULT 0
+    menu_id BIGINT REFERENCES telegram_vendor_menu(id),
+    price BIGINT NOT NULL,
+    stock BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS telegram_cart (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES custom_telegram_users(id),
-    vendor_id UUID REFERENCES telegram_vendor(id),
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT REFERENCES telegram_custom_users(telegram_user_id),
+    vendor_id BIGINT REFERENCES telegram_vendor(id),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'checked_out', 'cancelled')),
     items JSONB NOT NULL DEFAULT '[]',
-    total INTEGER NOT NULL DEFAULT 0
+    total BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT telegram_cart_user_vendor_unique UNIQUE (user_id, vendor_id)
 );
 
+
 CREATE TABLE IF NOT EXISTS telegram_orders (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     zazu_sub_name TEXT REFERENCES telegram_vendor(name),
-    user_id UUID REFERENCES custom_telegram_users(id),
-    vendor_id UUID REFERENCES telegram_vendor(id),
+    user_id BIGINT REFERENCES telegram_custom_users(telegram_user_id),
+    vendor_id BIGINT REFERENCES telegram_vendor(id),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','in_progress','delivered','cancelled')),
-    subtotal INTEGER NOT NULL,
-    delivery_fee INTEGER NOT NULL,
-    total INTEGER NOT NULL,
+    subtotal BIGINT NOT NULL,
+    delivery_fee BIGINT NOT NULL,
+    total BIGINT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS telegram_bots (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     bot_id BIGINT NOT NULL UNIQUE,         -- telegram's numeric bot ID from getMe()
     bot_username TEXT NOT NULL UNIQUE,     -- e.g. "ZazuVendorBot"
     bot_token TEXT NOT NULL UNIQUE,        -- the token from BotFather
-    vendor_id UUID NOT NULL REFERENCES telegram_vendor(id) ON DELETE CASCADE,
+    vendor_id BIGINT NOT NULL REFERENCES telegram_vendor(id) ON DELETE CASCADE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS payments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES telegram_orders(id),
+CREATE TABLE IF NOT EXISTS telegram_payments (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES telegram_orders(id),
     zazu_sub_name TEXT REFERENCES telegram_vendor(name),
     paystack_ref TEXT NOT NULL,
-    amount INTEGER NOT NULL,
+    amount BIGINT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed'))
 );
