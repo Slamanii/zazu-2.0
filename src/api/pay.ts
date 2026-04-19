@@ -1,8 +1,8 @@
 import { Router } from "express";
 import axios from "axios";
 import crypto from "crypto";
-import { PAYSTACK_SECRET_KEY } from "../src/env";
-import { pendingPayments } from "../src/freezer/pendingPayments";
+import { PAYSTACK_SECRET_KEY } from "../env";
+import { getOrderByPaystackRef } from "../db/queries";
 
 const router = Router();
 
@@ -15,9 +15,7 @@ router.post("/pay", async (req, res) => {
   }
 
   try {
-    // Amount from the bot is already in Naira (whole units) — convert to kobo
     const amountKobo = Math.round(Number(amount) * 100);
-    // Make reference unique so retries don't get rejected by Paystack
     const reference = `order_${order_id}_${Date.now()}`;
 
     const response = await axios.post(
@@ -25,12 +23,6 @@ router.post("/pay", async (req, res) => {
       { email, amount: amountKobo, reference },
       { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` } },
     );
-
-    pendingPayments.set(reference, {
-      chatId: Number(chat_id),
-      userId: Number(user_id),
-      vendorId: Number(vendor_id),
-    });
 
     res.json({
       access_code: response.data.data.access_code,
@@ -60,13 +52,15 @@ router.post("/paystack-webhook", async (req, res) => {
   if (event !== "charge.success") return;
 
   const reference = data.reference;
-  const pending = pendingPayments.get(reference);
-  if (!pending) return;
+  const order = await getOrderByPaystackRef(reference);
+  if (!order) return;
 
-  pendingPayments.delete(reference);
-
-  const { bot } = await import("../src/telegram/zazu_vendor_acct");
-  await bot.sendMessage(pending.chatId, `✅ Payment confirmed! Your order is being prepared.`);
+  const chatId = order.telegram_orders.user_id;
+  const { bot } = await import("../telegram/zazu_vendor_acct");
+  await bot.sendMessage(
+    chatId,
+    `✅ Payment confirmed! Your order is being prepared.`,
+  );
 });
 
 export default router;

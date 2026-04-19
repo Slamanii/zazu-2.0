@@ -10,20 +10,15 @@ import {
   upsertCart,
   getCart,
   getItemStock,
+  getVendorForBot,
+  updateCartMessageId,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
-import { localUserStore } from "../freezer/localUserStore";
 import { sendLocationToZazuMain } from "./zazu_main_client";
 import { ZAZU_MAIN_BOT } from "../env";
 import { getServerUrl } from "../ngrok";
-import { VendorState, CartItem, CartState } from "../types";
-import { getUiState } from "../freezer/userCartStore";
-import { getVendorState } from "../freezer/vendorState";
+import { CartItem, CartState } from "../types";
 import axios from "axios";
-
-function findItemById(state: VendorState, id: number) {
-  return state.categories.flatMap((c) => c.item).find((i) => i.id === id);
-}
 
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -36,12 +31,12 @@ export async function handleSetLocation(
 ) {
   const userId = query.from.id;
 
-  const user = await localUserStore.getUser(userId);
+  const user = await getUserByTelegramId(userId);
 
-  if (user?.location) {
+  if (user?.default_lat && user?.default_lng) {
     await bot.sendMessage(
       chatId,
-      `Your current location is:\n${user.location.lat}, ${user.location.lng}`,
+      `Your current location is:\n${user.default_lat}, ${user.default_lng}`,
     );
     return;
   }
@@ -60,7 +55,6 @@ export async function savePhoneNumberFlow(
   phone: string,
   name: string,
 ) {
-  await localUserStore.setPhone(userId, phone);
   await upsertUserPhone(userId, phone, name);
 }
 
@@ -71,7 +65,6 @@ export async function saveLocationFlow(
   lat: number,
   lng: number,
 ) {
-  await localUserStore.setLocation(userId, { lat, lng });
   await upsertUserLocation(userId, lat, lng);
 
   await sendLocationToZazuMain({ telegramId: userId, lat, lng });
@@ -84,13 +77,9 @@ export async function handleShowMenu(
   chatId: number,
   vendorId: number,
 ) {
-  const vendorState = getVendorState(vendorId);
+  const vendor = await getVendorForBot(vendorId);
 
-  if (!vendorState) {
-    return bot.sendMessage(chatId, "Menu loading...");
-  }
-
-  const keyboard = vendorState.categories.map((cat) => [
+  const keyboard = vendor.categories.map((cat) => [
     { text: cat.name, callback_data: `OPEN_CATEGORY:${cat.id}` },
   ]);
 
@@ -105,13 +94,8 @@ export async function handleOpenCategory(
   vendorId: number,
   categoryId: number,
 ) {
-  const vendorState = getVendorState(vendorId);
-
-  if (!vendorState) {
-    return bot.sendMessage(chatId, "Menu loading");
-  }
-
-  const category = vendorState.categories.find((c) => c.id === categoryId);
+  const vendor = await getVendorForBot(vendorId);
+  const category = vendor.categories.find((c) => c.id === categoryId);
 
   if (!category) {
     return bot.sendMessage(chatId, "category not found");
@@ -159,10 +143,8 @@ export async function handleSelectItem(
   vendorId: number,
   itemId: number,
 ) {
-  const vendorState = getVendorState(vendorId);
-  if (!vendorState) return;
-
-  const item = findItemById(vendorState, itemId);
+  const vendor = await getVendorForBot(vendorId);
+  const item = vendor.categories.flatMap((c) => c.item).find((i) => i.id === itemId);
   if (!item) return;
 
   if (item.stock <= 5) {
@@ -188,20 +170,20 @@ export async function handleSelectItem(
     return sendCartSummary(bot, chatId, userId, vendorId);
   }
 
-  const ui = getUiState(chatId);
-  ui.pendingItem = item;
-  ui.vendorId = vendorId;
-  ui.pendingItemStock = stock;
-
   await bot.sendMessage(chatId, `How many ${item.name}?`, {
     reply_markup: {
-      keyboard: [
-        [{ text: "1" }, { text: "2" }, { text: "3" }, { text: "4" }],
-        [{ text: "5" }, { text: "10" }],
-        [{ text: "Cancel" }],
+      inline_keyboard: [
+        [
+          { text: "1", callback_data: `QTY:${vendorId}:${itemId}:1` },
+          { text: "2", callback_data: `QTY:${vendorId}:${itemId}:2` },
+          { text: "3", callback_data: `QTY:${vendorId}:${itemId}:3` },
+          { text: "4", callback_data: `QTY:${vendorId}:${itemId}:4` },
+        ],
+        [
+          { text: "5", callback_data: `QTY:${vendorId}:${itemId}:5` },
+          { text: "10", callback_data: `QTY:${vendorId}:${itemId}:10` },
+        ],
       ],
-      resize_keyboard: true,
-      one_time_keyboard: true,
     },
   });
 }
@@ -246,11 +228,8 @@ export async function sendCartSummary(
   text += `\n\nTotal: ₦${cartData.total.toLocaleString()}`;
   keyboard.push([{ text: "Checkout", callback_data: "CHECKOUT" }]);
 
-  const ui = getUiState(chatId);
-
-  if (ui.cartMessageId) {
-    await bot.deleteMessage(chatId, ui.cartMessageId).catch(() => {});
-    ui.cartMessageId = undefined;
+  if (cartData.cart_message_id) {
+    await bot.deleteMessage(chatId, cartData.cart_message_id).catch(() => {});
   }
 
   const sent = await bot.sendMessage(chatId, text, {
@@ -258,7 +237,45 @@ export async function sendCartSummary(
     reply_markup: { inline_keyboard: keyboard },
   });
 
-  ui.cartMessageId = sent.message_id;
+  await updateCartMessageId(userId, vendorId, sent.message_id);
+}
+
+export async function handleAddItemWithQty(
+  bot: TelegramBot,
+  chatId: number,
+  userId: number,
+  vendorId: number,
+  itemId: number,
+  qty: number,
+) {
+  const vendor = await getVendorForBot(vendorId);
+  const item = vendor.categories.flatMap((c) => c.item).find((i) => i.id === itemId);
+  if (!item) return;
+
+  const [cartData, stock] = await Promise.all([
+    getCart(userId, vendorId),
+    getItemStock(itemId),
+  ]);
+  const items: CartItem[] = cartData?.items ?? [];
+  const existing = items.find((i) => i.itemId === itemId);
+  const currentQty = existing?.qty ?? 0;
+
+  if (currentQty + qty > stock) {
+    const canAdd = stock - currentQty;
+    if (canAdd <= 0) {
+      return bot.sendMessage(chatId, `You already have the maximum available (${stock}) in your cart.`);
+    }
+    return bot.sendMessage(chatId, `Only ${stock} ${item.name}(s) available. You can add at most ${canAdd} more.`);
+  }
+
+  if (existing) {
+    existing.qty += qty;
+  } else {
+    items.push({ itemId: item.id, name: item.name, price: item.price, qty });
+  }
+  const total = items.reduce((sum, i) => sum + i.price * i.qty, 0);
+  await upsertCart(userId, vendorId, items, total);
+  return sendCartSummary(bot, chatId, userId, vendorId);
 }
 
 export async function handleRemoveItem(

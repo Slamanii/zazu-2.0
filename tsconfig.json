@@ -13,5 +13,5 @@
     "declarationMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*", "api/**/*", "index.ts"]
+  "include": ["src/**/*", "src/api/**/*", "index.ts"]
 }

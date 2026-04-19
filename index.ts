@@ -3,9 +3,9 @@ import path from "path";
 import "./src/telegram/zazu_main_client";
 import "./src/telegram/zazu_vendor_acct";
 import { startNgrok } from "./src/ngrok";
-import ridesRouter from "./api/rides";
-import payRouter from "./api/pay";
-import menuRouter from "./api/menu";
+import ridesRouter from "./src/api/rides";
+import payRouter from "./src/api/pay";
+import menuRouter from "./src/api/menu";
 
 const app = express();
 app.use(express.json());

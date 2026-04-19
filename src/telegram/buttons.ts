@@ -10,6 +10,7 @@ import {
   handleRemoveItem,
   handleCheckout,
   handlePayStart,
+  handleAddItemWithQty,
 } from "./handlers";
 
 export async function onButtonClick(
@@ -42,6 +43,11 @@ export async function onButtonClick(
   if (data.startsWith("ADD_TO_CART:")) {
     const itemId = Number(data.split(":")[1]);
     return handleSelectItem(bot, chatId, userId, vendorId, itemId);
+  }
+
+  if (data.startsWith("QTY:")) {
+    const [, vid, iid, q] = data.split(":");
+    return handleAddItemWithQty(bot, chatId, userId, Number(vid), Number(iid), Number(q));
   }
 
   if (data.startsWith("CHECKOUT")) {

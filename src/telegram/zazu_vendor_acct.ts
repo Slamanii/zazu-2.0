@@ -6,9 +6,6 @@ import {
   sendCartSummary,
   callASAP,
 } from "./handlers";
-import { loadVendorState, getVendorState } from "../freezer/vendorState";
-import { localUserStore } from "../freezer/localUserStore";
-import { getUiState } from "../freezer/userCartStore";
 import {
   getPaymentStatus,
   getVendorByBotUsername,
@@ -16,8 +13,8 @@ import {
   updatePaystackRef,
   updatePaymentStatus,
   updateOrderStatus,
-  getCart,
   upsertCart,
+  getVendorForBot,
 } from "../db/queries";
 import { zazuId } from "./zazu_main_client";
 import { VENDOR_BOT } from "../env";
@@ -56,13 +53,13 @@ bot.onText(/\/menu/, async (msg: Message) => {
     const bot_info = { id: me.id, username: me.username };
     const vendor_info = await getVendorByBotUsername(bot_info.username!);
 
-    const vendorState = await loadVendorState(vendor_info.vendor_id);
+    const vendor = await getVendorForBot(vendor_info.vendor_id);
 
-    if (!vendorState || vendorState.categories.length === 0) {
+    if (!vendor.categories.length) {
       return bot.sendMessage(msg.chat.id, "No categories found.");
     }
 
-    const keyboard = vendorState.categories.map((cat) => [
+    const keyboard = vendor.categories.map((cat) => [
       { text: cat.name, callback_data: `OPEN_CATEGORY:${cat.id}` },
     ]);
 
@@ -170,12 +167,10 @@ bot.on("message", async (msg) => {
       try {
         const me = await bot.getMe();
         const vendor_info = await getVendorByBotUsername(me.username!);
-        const vendorState = getVendorState(vendor_info.vendor_id);
-
-        if (!vendorState) {
-          await bot.sendMessage(chatId, "Could not process your order 😔");
-          return;
-        }
+        const [vendor, userDb] = await Promise.all([
+          getVendorForBot(vendor_info.vendor_id),
+          getUserByTelegramId(userId),
+        ]);
 
         await updatePaystackRef(Number(orderId), reference);
         await updatePaymentStatus(Number(orderId), reference, "success");
@@ -186,7 +181,6 @@ bot.on("message", async (msg) => {
           "✅ Payment confirmed! Waiting for a rider to accept order...",
         );
 
-        const userDb = await getUserByTelegramId(userId);
         if (!userDb?.default_lat || !userDb?.default_lng) {
           await bot.sendMessage(
             chatId,
@@ -195,7 +189,7 @@ bot.on("message", async (msg) => {
           return;
         }
 
-        const pickupPoint = { lat: vendorState.lat, lng: vendorState.lng };
+        const pickupPoint = { lat: vendor.lat, lng: vendor.lng };
         const dropoffPoint = {
           lat: userDb.default_lat,
           lng: userDb.default_lng,
@@ -208,10 +202,10 @@ bot.on("message", async (msg) => {
           zazuId,
           dropoffPoint,
           pickupPoint,
-          vendorState.acct_type || "default",
+          vendor.acct_type || "default",
           "cash",
           userDb.phone ?? undefined,
-          vendorState.phone,
+          vendor.phone,
           orderId,
           vendor_info.vendor_id,
         );
@@ -238,55 +232,6 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (!msg.text || !msg.from) return;
-
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-
-  const ui = getUiState(chatId);
-
-  if (ui.pendingItem) {
-    const qty = Number(msg.text);
-    if (!qty || qty <= 0) {
-      return bot.sendMessage(chatId, "Enter a valid quantity");
-    }
-
-    const item = ui.pendingItem;
-    const vendorId = ui.vendorId!;
-    const stock = ui.pendingItemStock ?? Infinity;
-
-    const cartData = await getCart(userId, vendorId);
-    const items = cartData?.items ?? [];
-    const existing = items.find((i) => i.itemId === item.id);
-    const currentQty = existing?.qty ?? 0;
-
-    if (currentQty + qty > stock) {
-      const canAdd = stock - currentQty;
-      if (canAdd <= 0) {
-        return bot.sendMessage(
-          chatId,
-          `You already have the maximum available (${stock}) in your cart.`,
-        );
-      }
-      return bot.sendMessage(
-        chatId,
-        `Only ${stock} ${item.name}(s) available. You can add at most ${canAdd} more.`,
-      );
-    }
-
-    delete ui.pendingItem;
-    delete ui.vendorId;
-    delete ui.pendingItemStock;
-
-    if (existing) {
-      existing.qty += qty;
-    } else {
-      items.push({ itemId: item.id, name: item.name, price: item.price, qty });
-    }
-    const total = items.reduce((sum, i) => sum + i.price * i.qty, 0);
-    await upsertCart(userId, vendorId, items, total);
-    return sendCartSummary(bot, chatId, userId, vendorId);
-  }
 });
 
 // ── /start (no param) — onboarding ──────────────────────
@@ -365,8 +310,6 @@ bot.on("contact", async (msg: Message) => {
     );
   }
 
-  await localUserStore.setPhone(userId, msg.contact.phone_number);
-
   await bot.sendMessage(
     chatId,
     "Got it! Now share your location so we can deliver to you.",
@@ -387,18 +330,19 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
   const me = await bot.getMe();
   const bot_info = { id: me.id, username: me.username };
   const vendor_info = await getVendorByBotUsername(bot_info.username!);
-  const vendorState = getVendorState(vendor_info.vendor_id);
-
-  if (!vendorState) return;
 
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  const userState = await localUserStore.getUser(userId);
-  if (!userState?.location) return;
-
   const param = match?.[1];
   if (!param?.startsWith("paid_")) return;
+
+  const [vendor, userDb] = await Promise.all([
+    getVendorForBot(vendor_info.vendor_id),
+    getUserByTelegramId(userId),
+  ]);
+
+  if (!userDb?.default_lat || !userDb?.default_lng) return;
 
   const orderId = param.replace("paid_", "");
   const data = await getPaymentStatus(Number(orderId));
@@ -406,10 +350,10 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
   if (data?.status === "success") {
     await bot.sendMessage(chatId, "Payment Confirmed");
 
-    const pickupPoint = { lat: vendorState.lat, lng: vendorState.lng };
+    const pickupPoint = { lat: vendor.lat, lng: vendor.lng };
     const dropoffPoint = {
-      lat: userState.location.lat,
-      lng: userState.location.lng,
+      lat: userDb.default_lat,
+      lng: userDb.default_lng,
     };
 
     const orderPayload = await callASAP(
@@ -419,10 +363,10 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
       zazuId,
       dropoffPoint,
       pickupPoint,
-      vendorState.acct_type || "default",
+      vendor.acct_type || "default",
       "cash",
-      userState.phone,
-      vendorState.phone,
+      userDb.phone ?? undefined,
+      vendor.phone,
       orderId,
       vendor_info.vendor_id,
     );

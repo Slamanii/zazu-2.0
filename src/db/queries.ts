@@ -52,6 +52,26 @@ export async function getCategoriesWithItems(vendorId: number) {
   })) as Category[];
 }
 
+export async function getVendorForBot(vendorId: number): Promise<{
+  id: number; lat: number; lng: number; phone: string; acct_type: string;
+  categories: Category[];
+}> {
+  const [vendor, categories] = await Promise.all([
+    getVendorById(vendorId),
+    getCategoriesWithItems(vendorId),
+  ]);
+  return { ...vendor, categories };
+}
+
+export async function getOrderByPaystackRef(ref: string) {
+  const { data } = await supabase
+    .from("telegram_payments")
+    .select("order_id, telegram_orders(user_id, vendor_id)")
+    .eq("paystack_ref", ref)
+    .single();
+  return data as { order_id: number; telegram_orders: { user_id: number; vendor_id: number } } | null;
+}
+
 export async function getItemStock(itemId: number): Promise<number> {
   const { data } = await supabase
     .from("telegram_vendor_item")
@@ -213,12 +233,22 @@ export async function getPaymentStatus(orderId: number) {
 export async function getCart(userId: number, vendorId: number) {
   const { data } = await supabase
     .from("telegram_cart")
-    .select("items, total, status")
+    .select("items, total, status, cart_message_id")
     .eq("user_id", userId)
     .eq("vendor_id", vendorId)
     .eq("status", "active")
     .single();
-  return data as { items: CartItem[]; total: number; status: string } | null;
+  return data as { items: CartItem[]; total: number; status: string; cart_message_id: number | null } | null;
+}
+
+export async function updateCartMessageId(userId: number, vendorId: number, messageId: number) {
+  const { error } = await supabase
+    .from("telegram_cart")
+    .update({ cart_message_id: messageId })
+    .eq("user_id", userId)
+    .eq("vendor_id", vendorId)
+    .eq("status", "active");
+  if (error) console.error("updateCartMessageId error:", error.message);
 }
 
 export async function upsertCart(

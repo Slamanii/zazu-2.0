@@ -1,6 +1,6 @@
 import { Router } from "express";
 import axios from "axios";
-import { ASAP_BASE_URL } from "../src/env";
+import { ASAP_BASE_URL } from "../env";
 
 const router = Router();
 

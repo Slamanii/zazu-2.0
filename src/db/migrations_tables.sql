@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS telegram_cart (
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'checked_out', 'cancelled')),
     items JSONB NOT NULL DEFAULT '[]',
     total BIGINT NOT NULL DEFAULT 0,
+    cart_message_id BIGINT,
     CONSTRAINT telegram_cart_user_vendor_unique UNIQUE (user_id, vendor_id)
 );
 

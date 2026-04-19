@@ -1,7 +1,6 @@
 import TelegramBot, { CallbackQuery, Message } from "node-telegram-bot-api";
-import { mainUserStore } from "../freezer/mainUserStore";
-import { createPaystackLink } from "../../api/payment/paystack";
-import { updatePaystackRef } from "../db/queries";
+import { createPaystackLink } from "../api/payment/paystack";
+import { updatePaystackRef, upsertUserLocation } from "../db/queries";
 import { ZAZU_MAIN_BOT } from "../env";
 
 export const bot = new TelegramBot(ZAZU_MAIN_BOT, { polling: true });
@@ -12,18 +11,7 @@ export async function sendLocationToZazuMain(payload: {
   lat: number;
   lng: number;
 }) {
-  console.log("Sending to Zazu Main:", payload);
-
-  let user = await mainUserStore.findByTelegramId(payload.telegramId);
-
-  if (!user) {
-    user = await mainUserStore.createUser(payload.telegramId);
-  }
-
-  await mainUserStore.updateLocation(user.id, {
-    lat: payload.lat,
-    lng: payload.lng,
-  });
+  await upsertUserLocation(payload.telegramId, payload.lat, payload.lng);
 }
 
 bot.on("message", (msg) => {
