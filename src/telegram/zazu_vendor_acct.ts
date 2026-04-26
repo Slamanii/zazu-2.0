@@ -63,6 +63,8 @@ bot.onText(/\/menu/, async (msg: Message) => {
       { text: cat.name, callback_data: `OPEN_CATEGORY:${cat.id}` },
     ]);
 
+    const rmsg = await bot.sendMessage(msg.chat.id, "...", { reply_markup: { remove_keyboard: true } });
+    await bot.deleteMessage(msg.chat.id, rmsg.message_id).catch(() => {});
     await bot.sendMessage(msg.chat.id, "Choose a category:", {
       reply_markup: { inline_keyboard: keyboard },
     });
@@ -121,10 +123,19 @@ bot.onText(/\/cart/, async (msg: Message) => {
 
 // ── Callback buttons ─────────────────────────────────────
 bot.on("callback_query", async (query: CallbackQuery) => {
-  const me = await bot.getMe();
-  const bot_info = { id: me.id, username: me.username };
-  const vendor_info = await getVendorByBotUsername(bot_info.username!);
-  await onButtonClick(bot, query, vendor_info.vendor_id);
+  const chatId = query.message?.chat.id;
+  try {
+    const me = await bot.getMe();
+    const vendor_info = await getVendorByBotUsername(me.username!);
+    await onButtonClick(bot, query, vendor_info.vendor_id);
+  } catch (err: any) {
+    console.error("[VENDOR_BOT] callback_query error:", err.message, err);
+    if (chatId) {
+      await bot.sendMessage(chatId, "Something went wrong, please try again.").catch(() => {});
+    }
+  } finally {
+    bot.answerCallbackQuery(query.id).catch(() => {});
+  }
 });
 
 // ── Location shared ──────────────────────────────────────
@@ -179,6 +190,7 @@ bot.on("message", async (msg) => {
         await bot.sendMessage(
           chatId,
           "✅ Payment confirmed! Waiting for a rider to accept order...",
+          { reply_markup: { remove_keyboard: true } },
         );
 
         if (!userDb?.default_lat || !userDb?.default_lng) {
@@ -202,7 +214,7 @@ bot.on("message", async (msg) => {
           zazuId,
           dropoffPoint,
           pickupPoint,
-          vendor.acct_type || "default",
+          "ASAPEXPRESS",
           "cash",
           userDb.phone ?? undefined,
           vendor.phone,
@@ -363,7 +375,7 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
       zazuId,
       dropoffPoint,
       pickupPoint,
-      vendor.acct_type || "default",
+       "ASAPEXPRESS",
       "cash",
       userDb.phone ?? undefined,
       vendor.phone,

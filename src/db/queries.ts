@@ -258,13 +258,31 @@ export async function upsertCart(
   total: number,
   status: "active" | "checked_out" | "cancelled" = "active",
 ) {
-  const { error } = await supabase
-    .from("telegram_cart")
-    .upsert(
-      { user_id: userId, vendor_id: vendorId, items, total, status },
-      { onConflict: "user_id,vendor_id" },
-    );
-  if (error) console.error("upsertCart error:", error.message);
+  if (status === "active") {
+    const { data, error } = await supabase
+      .from("telegram_cart")
+      .update({ items, total })
+      .eq("user_id", userId)
+      .eq("vendor_id", vendorId)
+      .eq("status", "active")
+      .select("id");
+    if (error) { console.error("upsertCart update error:", error.message); return; }
+
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase
+        .from("telegram_cart")
+        .insert({ user_id: userId, vendor_id: vendorId, items, total, status: "active" });
+      if (insertError) console.error("upsertCart insert error:", insertError.message);
+    }
+  } else {
+    const { error } = await supabase
+      .from("telegram_cart")
+      .update({ status, items, total })
+      .eq("user_id", userId)
+      .eq("vendor_id", vendorId)
+      .eq("status", "active");
+    if (error) console.error("upsertCart status update error:", error.message);
+  }
 }
 
 export async function getPaymentByReference(reference: number) {

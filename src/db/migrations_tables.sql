@@ -122,3 +122,5 @@ CREATE TABLE IF NOT EXISTS telegram_payments (
     amount BIGINT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed'))
 );
+
+

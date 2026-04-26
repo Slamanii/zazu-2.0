@@ -69,7 +69,9 @@ export async function saveLocationFlow(
 
   await sendLocationToZazuMain({ telegramId: userId, lat, lng });
 
-  await bot.sendMessage(chatId, "Location saved!");
+  await bot.sendMessage(chatId, "Location saved!", {
+    reply_markup: { remove_keyboard: true },
+  });
 }
 
 export async function handleShowMenu(
@@ -83,7 +85,9 @@ export async function handleShowMenu(
     { text: cat.name, callback_data: `OPEN_CATEGORY:${cat.id}` },
   ]);
 
-  await bot.sendMessage(chatId, "Menu:", {
+  const rmsg = await bot.sendMessage(chatId, "...", { reply_markup: { remove_keyboard: true } });
+  await bot.deleteMessage(chatId, rmsg.message_id).catch(() => {});
+  await bot.sendMessage(chatId, "Choose a category:", {
     reply_markup: { inline_keyboard: keyboard },
   });
 }
@@ -197,8 +201,13 @@ export async function sendCartSummary(
   const cartData = await getCart(userId, vendorId);
 
   if (!cartData || cartData.items.length === 0) {
-    return bot.sendMessage(chatId, "Your cart is empty.");
+    return bot.sendMessage(chatId, "Your cart is empty.", {
+      reply_markup: { remove_keyboard: true },
+    });
   }
+
+  const rmsg = await bot.sendMessage(chatId, "...", { reply_markup: { remove_keyboard: true } });
+  await bot.deleteMessage(chatId, rmsg.message_id).catch(() => {});
 
   const items = cartData.items;
   let keyboard: any[] = [];
@@ -229,7 +238,17 @@ export async function sendCartSummary(
   keyboard.push([{ text: "Checkout", callback_data: "CHECKOUT" }]);
 
   if (cartData.cart_message_id) {
-    await bot.deleteMessage(chatId, cartData.cart_message_id).catch(() => {});
+    try {
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: cartData.cart_message_id,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: keyboard },
+      });
+      return;
+    } catch {
+      // message deleted or too old — fall through to send a new one
+    }
   }
 
   const sent = await bot.sendMessage(chatId, text, {
@@ -417,20 +436,22 @@ export async function handleCheckout(
     return;
   }
 
+  const vendor = await getVendorForBot(vendorId);
+
   const searchMsg = await bot.sendMessage(
     chatId,
     "🔍 Searching for riders near your location...",
   );
 
-  const nearbyRiders = await getNearbyRiders(
-    user.default_lat,
-    user.default_lng,
-    10,
-  );
+  const preflightRes = await axios.post(`${getServerUrl()}/ride-preflight`, {
+    pick_up: { lat: vendor.lat, lng: vendor.lng },
+    drop_off: { lat: user.default_lat, lng: user.default_lng },
+    ride_type: ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type) ? vendor.acct_type : "ASAPEXPRESS",
+  }).catch(() => null);
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
 
-  if (nearbyRiders.length === 0) {
+  if (!preflightRes?.data?.can_serve) {
     await bot.sendMessage(
       chatId,
       "😔 No riders available near you right now.\nPlease try again in a few minutes.",
@@ -524,22 +545,22 @@ export async function callASAP(
       weight: 3.0,
     }));
 
-    const payload = {
-      riderId,
-      pickupPoint,
-      dropoffPoint,
-      rideType,
-      paymentMethod,
-      itemsDetails: itemDetails,
-      orderId,
-      userId,
-      userPhoneNumber,
-      vendorPhoneNumber,
+    const ride_request_payload = {
+      pick_up: pickupPoint,
+      drop_off: dropoffPoint,
+      ride_type: rideType,
+      payment_method: paymentMethod,
+      items: itemDetails,
+      order_id: null,
+      user_id: userId,
+      user_phone_number: userPhoneNumber,
+      vendor_phone_number: vendorPhoneNumber,
     };
+    
 
     const response = await axios.post(
       `${getServerUrl()}/ride-request`,
-      payload,
+      ride_request_payload,
     );
 
     const rideData = response.data;
@@ -553,7 +574,8 @@ export async function callASAP(
 
     return orderPayload;
   } catch (err: any) {
-    console.error("Error sending ride request to Zazu-Main:", err.message);
+    const body = err.response?.data;
+    console.error("Error sending ride request to Zazu-Main:", err.message, JSON.stringify(body, null, 2));
     await bot.sendMessage(chatId, "Error contacting delivery system 😔");
     return null;
   }
