@@ -7,3 +7,4 @@ declare namespace NodeJS {
         PAYSTACK_SECRET_KEY: string;
     }
 }
+

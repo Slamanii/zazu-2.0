@@ -1,4 +1,16 @@
 import { Buffer } from "buffer";
+import { createHash } from "crypto";
+
+function telegramIdToUuid(telegramId: number): string {
+  const h = createHash("sha1").update(String(telegramId)).digest("hex");
+  return [
+    h.slice(0, 8),
+    h.slice(8, 12),
+    "4" + h.slice(13, 16),
+    ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16) + h.slice(17, 20),
+    h.slice(20, 32),
+  ].join("-");
+}
 import {
   insertOrder,
   insertPayment,
@@ -444,6 +456,7 @@ export async function handleCheckout(
   );
 
   const preflightRes = await axios.post(`${getServerUrl()}/ride-preflight`, {
+    rider_id: telegramIdToUuid(userId),
     pick_up: { lat: vendor.lat, lng: vendor.lng },
     drop_off: { lat: user.default_lat, lng: user.default_lng },
     ride_type: ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type) ? vendor.acct_type : "ASAPEXPRESS",
@@ -546,6 +559,7 @@ export async function callASAP(
     }));
 
     const ride_request_payload = {
+      rider_id: riderId,
       pick_up: pickupPoint,
       drop_off: dropoffPoint,
       ride_type: rideType,

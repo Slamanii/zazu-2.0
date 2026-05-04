@@ -38,19 +38,8 @@ router.post("/ride-request", async (req, res) => {
       payload,
     );
 
-    const { request_id } = rideResponse.data;
-    console.log("Ride request inserted — request_id:", request_id);
-
-    // respond immediately, assign-driver runs in the background
-    res.json({ success: true, request_id });
-
-    axios.post(`${ASAP_BASE_URL}/riders/assign-driver`, { ...payload, request_id })
-      .then((driverRes) => {
-        console.log("Driver assigned:", JSON.stringify(driverRes.data, null, 2));
-      })
-      .catch((err) => {
-        console.error("assign-driver error:", err.message, JSON.stringify(err.response?.data, null, 2));
-      });
+    console.log("Ride assignment:", JSON.stringify(rideResponse.data, null, 2));
+    res.json({ success: true, ...rideResponse.data });
   } catch (err: any) {
     const body = err.response?.data;
     console.error("Error calling ASAP API:", err.message, JSON.stringify(body, null, 2));

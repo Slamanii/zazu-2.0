@@ -41,7 +41,7 @@ paystackRouter.get("/return", async (req, res) => {
 
   let payment: { zazu_sub_name: string }
   try {
-    payment = await getPaymentByReference(reference as string)
+    payment = await getPaymentByReference(Number(reference))
   } catch (error) {
     console.error("Order not found:", error)
     return res.status(404).send("Order not found")

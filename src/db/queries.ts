@@ -258,6 +258,7 @@ export async function upsertCart(
   total: number,
   status: "active" | "checked_out" | "cancelled" = "active",
 ) {
+  await ensureUser(userId);
   if (status === "active") {
     const { data, error } = await supabase
       .from("telegram_cart")

@@ -4,7 +4,8 @@ import { updatePaystackRef, upsertUserLocation } from "../db/queries";
 import { ZAZU_MAIN_BOT } from "../env";
 
 export const bot = new TelegramBot(ZAZU_MAIN_BOT, { polling: true });
-export const zazuId = crypto.randomUUID();
+// export const zazuId = crypto.randomUUID();
+export const zazuId = "ee62ea27-abe2-4869-a989-a453a14f8747";
 
 export async function sendLocationToZazuMain(payload: {
   telegramId: number;
