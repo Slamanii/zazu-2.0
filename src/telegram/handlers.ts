@@ -23,14 +23,19 @@ import {
   getCart,
   getItemStock,
   getVendorForBot,
+  insertRating,
+  getVendorAverageRating,
+  savePickupCode,
   updateCartMessageId,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
-import { ZAZU_MAIN_BOT } from "../env";
+import { ZAZU_MAIN_BOT, ASAP_WEBHOOK_SECRET } from "../env";
 import { getServerUrl } from "../ngrok";
 import { CartItem, CartState } from "../types";
 import axios from "axios";
+
+const INTERNAL_HEADERS = { "x-asap-secret": ASAP_WEBHOOK_SECRET };
 
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -455,12 +460,16 @@ export async function handleCheckout(
     "🔍 Searching for riders near your location...",
   );
 
-  const preflightRes = await axios.post(`${getServerUrl()}/ride-preflight`, {
-    rider_id: telegramIdToUuid(userId),
-    pick_up: { lat: vendor.lat, lng: vendor.lng },
-    drop_off: { lat: user.default_lat, lng: user.default_lng },
-    ride_type: ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type) ? vendor.acct_type : "ASAPEXPRESS",
-  }).catch(() => null);
+  const preflightRes = await axios.post(
+    `${getServerUrl()}/ride-preflight`,
+    {
+      rider_id: telegramIdToUuid(userId),
+      pick_up: { lat: vendor.lat, lng: vendor.lng },
+      drop_off: { lat: user.default_lat, lng: user.default_lng },
+      ride_type: ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type) ? vendor.acct_type : "ASAPEXPRESS",
+    },
+    { headers: INTERNAL_HEADERS },
+  ).catch(() => null);
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
 
@@ -565,7 +574,7 @@ export async function callASAP(
       ride_type: rideType,
       payment_method: paymentMethod,
       items: itemDetails,
-      order_id: null,
+      order_id: orderData[0]?.order_ref ?? null,
       user_id: userId,
       user_phone_number: userPhoneNumber,
       vendor_phone_number: vendorPhoneNumber,
@@ -575,6 +584,7 @@ export async function callASAP(
     const response = await axios.post(
       `${getServerUrl()}/ride-request`,
       ride_request_payload,
+      { headers: INTERNAL_HEADERS },
     );
 
     const rideData = response.data;
@@ -584,7 +594,7 @@ export async function callASAP(
       return null;
     }
 
-    const orderPayload = await orderComingThrough(rideData, orderData);
+    const orderPayload = await orderComingThrough(rideData, orderData, rideType);
 
     return orderPayload;
   } catch (err: any) {
@@ -595,9 +605,14 @@ export async function callASAP(
   }
 }
 
-async function orderComingThrough(rideDetails: any, orderDetails: any) {
-  const pickupCode = Math.floor(100000 + Math.random() * 900000);
-
+async function orderComingThrough(rideDetails: any, orderDetails: any, rideType: string) {
+  const pickupCode = String(Math.floor(100000 + Math.random() * 900000));
+  const orderId = orderDetails[0]?.id;
+  if (orderId) {
+    await savePickupCode(orderId, pickupCode, rideType).catch((err) =>
+      console.error("Failed to save pickup code:", err.message),
+    );
+  }
   return {
     eta: rideDetails.estimated_arrival,
     timeInMin: rideDetails.estimated_time_min,
@@ -606,4 +621,47 @@ async function orderComingThrough(rideDetails: any, orderDetails: any) {
     pickupCode,
     orderDetails,
   };
+}
+
+function buildStarDisplay(average: number): string {
+  const rounded = Math.round(average);
+  return "⭐".repeat(rounded) + "☆".repeat(5 - rounded) + ` (${average.toFixed(1)})`;
+}
+
+export async function sendRatingPrompt(
+  bot: TelegramBot,
+  chatId: number,
+  vendorId: number,
+  orderId: number,
+) {
+  await bot.sendMessage(chatId, "How was your order? Rate your experience:", {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "⭐ 1", callback_data: `rate_${vendorId}_${orderId}_1` },
+        { text: "⭐ 2", callback_data: `rate_${vendorId}_${orderId}_2` },
+        { text: "⭐ 3", callback_data: `rate_${vendorId}_${orderId}_3` },
+        { text: "⭐ 4", callback_data: `rate_${vendorId}_${orderId}_4` },
+        { text: "⭐ 5", callback_data: `rate_${vendorId}_${orderId}_5` },
+      ]],
+    },
+  });
+}
+
+export async function handleRating(
+  bot: TelegramBot,
+  chatId: number,
+  userId: number,
+  vendorId: number,
+  orderId: number,
+  rating: number,
+  messageId: number,
+) {
+  await insertRating(userId, vendorId, orderId, rating);
+  const { average, count } = await getVendorAverageRating(vendorId);
+  const stars = "⭐".repeat(rating) + "☆".repeat(5 - rating);
+  await bot.editMessageText(`${stars}\nThanks for rating!`, {
+    chat_id: chatId,
+    message_id: messageId,
+  });
+  await bot.setMyDescription({ description: `${buildStarDisplay(average)} · ${count} review${count !== 1 ? "s" : ""}` }).catch(() => {});
 }

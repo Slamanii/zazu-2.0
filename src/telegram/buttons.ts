@@ -11,6 +11,7 @@ import {
   handleCheckout,
   handlePayStart,
   handleAddItemWithQty,
+  handleRating,
 } from "./handlers";
 
 export async function onButtonClick(
@@ -77,5 +78,10 @@ export async function onButtonClick(
   if (data.startsWith("SOLPAY:")) {
     const orderId = data.split(":")[1];
     return handlePayStart(bot, chatId, userId, email, vendorId, orderId, "sol");
+  }
+
+  if (data.startsWith("rate_")) {
+    const [, vid, oid, stars] = data.split("_");
+    return handleRating(bot, chatId, userId, Number(vid), Number(oid), Number(stars), query.message.message_id);
   }
 }

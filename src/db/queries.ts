@@ -286,6 +286,79 @@ export async function upsertCart(
   }
 }
 
+export async function getOrderContext(orderId: number): Promise<{ telegramId: number; vendorId: number } | null> {
+  const { data, error } = await supabase
+    .from("telegram_orders")
+    .select("user_id, vendor_id")
+    .eq("id", orderId)
+    .single();
+  if (error || !data) return null;
+  return { telegramId: data.user_id, vendorId: data.vendor_id };
+}
+
+export async function savePickupCode(orderId: number, pickupCode: string, rideType: string) {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ pickup_code: pickupCode, ride_type: rideType })
+    .eq("id", orderId);
+  if (error) throw error;
+}
+
+export async function getOrderForEscrow(orderRef: string) {
+  const { data: order, error: oErr } = await supabase
+    .from("telegram_orders")
+    .select("id, subtotal, delivery_fee, ride_type, pickup_code, status, vendor_id")
+    .eq("order_ref", orderRef)
+    .single();
+  if (oErr || !order) throw new Error("Order not found");
+
+  const { data: vendor, error: vErr } = await supabase
+    .from("telegram_vendor")
+    .select("name, acct_details")
+    .eq("id", order.vendor_id)
+    .single();
+  if (vErr || !vendor) throw new Error("Vendor not found");
+
+  return {
+    order: order as {
+      id: number; subtotal: number; delivery_fee: number;
+      ride_type: string; pickup_code: string; status: string; vendor_id: number;
+    },
+    vendor: vendor as {
+      name: string;
+      acct_details: { bank_account_number: string; bank_code: string };
+    },
+  };
+}
+
+// ---------- Ratings ----------
+
+export async function insertRating(
+  userId: number,
+  vendorId: number,
+  orderId: number,
+  rating: number,
+) {
+  const { error } = await supabase
+    .from("telegram_vendor_ratings")
+    .upsert(
+      { user_id: userId, vendor_id: vendorId, order_id: orderId, rating },
+      { onConflict: "user_id,order_id" },
+    );
+  if (error) throw error;
+}
+
+export async function getVendorAverageRating(vendorId: number): Promise<{ average: number; count: number }> {
+  const { data, error } = await supabase
+    .from("telegram_vendor_ratings")
+    .select("rating")
+    .eq("vendor_id", vendorId);
+  if (error) throw error;
+  if (!data || data.length === 0) return { average: 0, count: 0 };
+  const average = data.reduce((sum, r) => sum + r.rating, 0) / data.length;
+  return { average: Math.round(average * 10) / 10, count: data.length };
+}
+
 export async function getPaymentByReference(reference: number) {
   const { data, error } = await supabase
     .from("telegram_payments")

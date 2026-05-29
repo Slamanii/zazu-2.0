@@ -123,4 +123,19 @@ CREATE TABLE IF NOT EXISTS telegram_payments (
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed'))
 );
 
+ALTER TABLE telegram_orders
+  ADD COLUMN IF NOT EXISTS pickup_code TEXT,
+  ADD COLUMN IF NOT EXISTS ride_type TEXT NOT NULL DEFAULT 'ASAPEXPRESS',
+  ADD COLUMN IF NOT EXISTS order_ref UUID DEFAULT gen_random_uuid();
+
+CREATE TABLE IF NOT EXISTS telegram_vendor_ratings (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES telegram_custom_users(telegram_user_id),
+    vendor_id BIGINT NOT NULL REFERENCES telegram_vendor(id),
+    order_id BIGINT NOT NULL REFERENCES telegram_orders(id),
+    rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT one_rating_per_order UNIQUE (user_id, order_id)
+);
+
 
