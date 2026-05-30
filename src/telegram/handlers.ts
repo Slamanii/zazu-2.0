@@ -31,7 +31,7 @@ import {
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
 import { ZAZU_MAIN_BOT, ASAP_WEBHOOK_SECRET } from "../env";
-import { getServerUrl } from "../ngrok";
+import { INTERNAL_URL, PUBLIC_URL } from "../env";
 import { CartItem, CartState } from "../types";
 import axios from "axios";
 
@@ -461,7 +461,7 @@ export async function handleCheckout(
   );
 
   const preflightRes = await axios.post(
-    `${getServerUrl()}/ride-preflight`,
+    `${INTERNAL_URL}/ride-preflight`,
     {
       rider_id: telegramIdToUuid(userId),
       pick_up: { lat: vendor.lat, lng: vendor.lng },
@@ -491,9 +491,8 @@ export async function handleCheckout(
   });
 
   const webAppUrl =
-    `${getServerUrl()}/pay.html` +
-    `?ngrok-skip-browser-warning=true` +
-    `&order_id=${order.id}` +
+    `${PUBLIC_URL}/pay.html` +
+    `?order_id=${order.id}` +
     `&amount=${order.total}` +
     `&email=${encodeURIComponent(email)}` +
     `&chat_id=${chatId}` +
@@ -582,7 +581,7 @@ export async function callASAP(
     
 
     const response = await axios.post(
-      `${getServerUrl()}/ride-request`,
+      `${INTERNAL_URL}/ride-request`,
       ride_request_payload,
       { headers: INTERNAL_HEADERS },
     );

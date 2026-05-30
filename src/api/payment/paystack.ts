@@ -1,5 +1,7 @@
 import axios from "axios";
 
+import { PUBLIC_URL } from "../../env";
+
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY!;
 
 export async function createPaystackLink(
@@ -21,7 +23,7 @@ export async function createPaystackLink(
         user_id: order.userId,
         order_id: order.id,
       },
-      callback_url: "https://abcd1234.ngrok-free.app/paystack/return",
+      callback_url: `${PUBLIC_URL}/paystack/return`,
     },
     {
       headers: {
