@@ -28,7 +28,6 @@ import {
   savePickupCode,
   updateCartMessageId,
   insertFakeDriversNear,
-  deleteFakeDriversByIds,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
@@ -485,20 +484,12 @@ export async function handleCheckout(
       chatId,
       "🛠️ Still in development mode — using fake drivers near you for testing.",
     );
-    const fakeDriverIds = await insertFakeDriversNear(
+    await insertFakeDriversNear(
       vendor.lat,
       vendor.lng,
       rideType === "ASAP" ? "EV" : "Bike",
     );
     preflightRes = await runPreflight();
-
-    // Auto-cleanup so fake drivers can't linger and get matched to a real
-    // order later — 10 minutes is enough to cover this checkout flow.
-    setTimeout(() => {
-      deleteFakeDriversByIds(fakeDriverIds).catch((err) =>
-        console.error("Failed to clean up fake drivers:", err),
-      );
-    }, 10 * 60 * 1000);
   }
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});

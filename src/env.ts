@@ -1,10 +1,15 @@
-export const ZAZU_MAIN_BOT = "8521586068:AAGTL6ymUHXKwSL6WV9s1XUqsb-mv_zU128";
-export const VENDOR_BOT = "8589823390:AAE56F5jcl_JXwJyX_MjDqD70vb4D-X4gwQ";
+export const DEV_MODE = process.env.DEV_MODE === "true";
 
-// Dev-only bot tokens, polled instead of the live tokens above when DEV_MODE
-// is on, so local development never steals updates from the live server.
-export const VENDOR_BOT_DEV = "8817157876:AAHfz4vMGgGS0OQwfXPgMTcU8ncdtIc6Zik";
-export const ZAZU_MAIN_BOT_DEV = "REPLACE_WITH_DEV_BOTFATHER_TOKEN";
+export const ZAZU_MAIN_BOT = "8521586068:AAGTL6ymUHXKwSL6WV9s1XUqsb-mv_zU128";
+
+export const PRODUCTION_VENDOR_BOT =
+  "8589823390:AAE56F5jcl_JXwJyX_MjDqD70vb4D-X4gwQ";
+export const DEVELOPMENT_VENDOR_BOT =
+  "8817157876:AAHfz4vMGgGS0OQwfXPgMTcU8ncdtIc6Zik";
+export const VENDOR_BOT = DEV_MODE
+  ? DEVELOPMENT_VENDOR_BOT
+  : PRODUCTION_VENDOR_BOT;
+
 export const SUPABASE_URL = "https://edtsmqjnkakaaujmmhip.supabase.co";
 
 export const SUPABASE_ANON_KEY =
@@ -26,5 +31,3 @@ export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 export const INTERNAL_URL = process.env.INTERNAL_URL ?? "http://localhost:4000";
 export const PUBLIC_URL =
   process.env.PUBLIC_URL ?? "https://18-130-60-168.sslip.io";
-
-export const DEV_MODE = process.env.DEV_MODE === "true";

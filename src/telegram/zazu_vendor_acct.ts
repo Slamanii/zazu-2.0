@@ -19,11 +19,9 @@ import {
   getVendorForBot,
 } from "../db/queries";
 import { zazuId } from "./zazu_main_client";
-import { VENDOR_BOT, VENDOR_BOT_DEV, DEV_MODE } from "../env";
+import { VENDOR_BOT } from "../env";
 
-export const bot = new TelegramBot(DEV_MODE ? VENDOR_BOT_DEV : VENDOR_BOT, {
-  polling: true,
-});
+export const bot = new TelegramBot(VENDOR_BOT, { polling: true });
 
 bot.on("polling_error", (err) =>
   console.error("[VENDOR_BOT] polling error:", err.message),

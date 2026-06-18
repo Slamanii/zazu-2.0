@@ -392,17 +392,6 @@ export async function insertFakeDriversNear(
 
   const { error } = await supabase.from("back_drivers").insert(fakeDrivers);
   if (error) throw error;
-
-  return fakeDrivers.map((d) => d.driver_id);
-}
-
-export async function deleteFakeDriversByIds(driverIds: string[]) {
-  if (driverIds.length === 0) return;
-  const { error } = await supabase
-    .from("back_drivers")
-    .delete()
-    .in("driver_id", driverIds);
-  if (error) throw error;
 }
 
 export async function getPaymentByReference(reference: number) {
