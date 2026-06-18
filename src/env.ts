@@ -17,6 +17,7 @@ export const NGROK_AUTHTOKEN =
 export const ASAP_BASE_URL =
   process.env.ASAP_BASE_URL ?? "http://127.0.0.1:8081";
 export const ASAP_WEBHOOK_SECRET = process.env.ASAP_WEBHOOK_SECRET ?? "";
+export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 export const INTERNAL_URL = process.env.INTERNAL_URL ?? "http://localhost:4000";
 export const PUBLIC_URL =
   process.env.PUBLIC_URL ?? "https://18-130-60-168.sslip.io";

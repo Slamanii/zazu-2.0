@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/Projects/zazu-2.0
+EnvironmentFile=/home/ubuntu/Projects/zazu-2.0/linux_server_config/.env
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
