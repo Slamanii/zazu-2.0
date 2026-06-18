@@ -1,0 +1,16 @@
+[Unit]
+Description=Zazu app
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Projects/zazu-2.0
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+Environment=PUBLIC_URL=https://18-130-60-168.sslip.io
+Environment=INTERNAL_URL=http://127.0.0.1:4000
+
+[Install]
+WantedBy=multi-user.target
