@@ -359,6 +359,52 @@ export async function getVendorAverageRating(vendorId: number): Promise<{ averag
   return { average: Math.round(average * 10) / 10, count: data.length };
 }
 
+// ---------- Dev mode ----------
+
+// Scatters fake drivers within ~2km of a point so Ride-hailing's
+// preflight check (which requires drivers within 5km) finds enough riders.
+export async function insertFakeDriversNear(
+  lat: number,
+  lng: number,
+  vehicleType: "EV" | "Bike",
+  count: number = 3,
+) {
+  const fakeDrivers = Array.from({ length: count }, (_, i) => {
+    const angle = Math.random() * 2 * Math.PI;
+    const radiusKm = Math.random() * 2;
+    const dLat = (radiusKm / 111) * Math.cos(angle);
+    const dLng =
+      (radiusKm / (111 * Math.cos((lat * Math.PI) / 180))) * Math.sin(angle);
+
+    const id = crypto.randomUUID();
+    return {
+      driver_id: id,
+      driver_pubkey: {},
+      name: `Dev Fake Rider ${i + 1}`,
+      email: `fake-rider-${id}@dev.local`,
+      phone: "0000000000",
+      status: "available",
+      driver_location: { lat: lat + dLat, lng: lng + dLng },
+      vehicle_type: vehicleType,
+      driver_response: {},
+    };
+  });
+
+  const { error } = await supabase.from("back_drivers").insert(fakeDrivers);
+  if (error) throw error;
+
+  return fakeDrivers.map((d) => d.driver_id);
+}
+
+export async function deleteFakeDriversByIds(driverIds: string[]) {
+  if (driverIds.length === 0) return;
+  const { error } = await supabase
+    .from("back_drivers")
+    .delete()
+    .in("driver_id", driverIds);
+  if (error) throw error;
+}
+
 export async function getPaymentByReference(reference: number) {
   const { data, error } = await supabase
     .from("telegram_payments")

@@ -1,9 +1,11 @@
 import TelegramBot, { CallbackQuery, Message } from "node-telegram-bot-api";
 import { createPaystackLink } from "../api/payment/paystack";
 import { updatePaystackRef, upsertUserLocation } from "../db/queries";
-import { ZAZU_MAIN_BOT } from "../env";
+import { ZAZU_MAIN_BOT, ZAZU_MAIN_BOT_DEV, DEV_MODE } from "../env";
 
-export const bot = new TelegramBot(ZAZU_MAIN_BOT, { polling: true });
+export const bot = new TelegramBot(DEV_MODE ? ZAZU_MAIN_BOT_DEV : ZAZU_MAIN_BOT, {
+  polling: true,
+});
 // export const zazuId = crypto.randomUUID();
 export const zazuId = "ee62ea27-abe2-4869-a989-a453a14f8747";
 

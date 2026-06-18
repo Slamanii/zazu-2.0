@@ -27,11 +27,13 @@ import {
   getVendorAverageRating,
   savePickupCode,
   updateCartMessageId,
+  insertFakeDriversNear,
+  deleteFakeDriversByIds,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
 import { ZAZU_MAIN_BOT, ASAP_WEBHOOK_SECRET } from "../env";
-import { INTERNAL_URL, PUBLIC_URL } from "../env";
+import { INTERNAL_URL, PUBLIC_URL, DEV_MODE } from "../env";
 import { CartItem, CartState } from "../types";
 import axios from "axios";
 
@@ -460,16 +462,44 @@ export async function handleCheckout(
     "🔍 Searching for riders near your location...",
   );
 
-  const preflightRes = await axios.post(
-    `${INTERNAL_URL}/ride-preflight`,
-    {
-      rider_id: telegramIdToUuid(userId),
-      pick_up: { lat: vendor.lat, lng: vendor.lng },
-      drop_off: { lat: user.default_lat, lng: user.default_lng },
-      ride_type: ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type) ? vendor.acct_type : "ASAPEXPRESS",
-    },
-    { headers: INTERNAL_HEADERS },
-  ).catch(() => null);
+  const rideType = ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type)
+    ? vendor.acct_type
+    : "ASAPEXPRESS";
+
+  const runPreflight = () =>
+    axios.post(
+      `${INTERNAL_URL}/ride-preflight`,
+      {
+        rider_id: telegramIdToUuid(userId),
+        pick_up: { lat: vendor.lat, lng: vendor.lng },
+        drop_off: { lat: user.default_lat, lng: user.default_lng },
+        ride_type: rideType,
+      },
+      { headers: INTERNAL_HEADERS },
+    ).catch(() => null);
+
+  let preflightRes = await runPreflight();
+
+  if (!preflightRes?.data?.can_serve && DEV_MODE) {
+    await bot.sendMessage(
+      chatId,
+      "🛠️ Still in development mode — using fake drivers near you for testing.",
+    );
+    const fakeDriverIds = await insertFakeDriversNear(
+      vendor.lat,
+      vendor.lng,
+      rideType === "ASAP" ? "EV" : "Bike",
+    );
+    preflightRes = await runPreflight();
+
+    // Auto-cleanup so fake drivers can't linger and get matched to a real
+    // order later — 10 minutes is enough to cover this checkout flow.
+    setTimeout(() => {
+      deleteFakeDriversByIds(fakeDriverIds).catch((err) =>
+        console.error("Failed to clean up fake drivers:", err),
+      );
+    }, 10 * 60 * 1000);
+  }
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
 
