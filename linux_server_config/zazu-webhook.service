@@ -1,0 +1,15 @@
+[Unit]
+Description=Zazu GitHub webhook listener
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Projects/zazu-2.0
+ExecStart=/usr/bin/node linux_server_config/webhook-listener.js
+Restart=on-failure
+RestartSec=5
+Environment=WEBHOOK_SECRET=REPLACE_ME_WITH_A_RANDOM_SECRET
+
+[Install]
+WantedBy=multi-user.target
