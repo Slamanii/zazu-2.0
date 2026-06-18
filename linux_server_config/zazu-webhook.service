@@ -6,10 +6,10 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/Projects/zazu-2.0
+EnvironmentFile=/home/ubuntu/Projects/zazu-2.0/linux_server_config/.env
 ExecStart=/usr/bin/node linux_server_config/webhook-listener.js
 Restart=on-failure
 RestartSec=5
-Environment=WEBHOOK_SECRET=REPLACE_ME_WITH_A_RANDOM_SECRET
 
 [Install]
 WantedBy=multi-user.target
