@@ -1,7 +1,7 @@
 import { Router } from "express";
 import axios from "axios";
 import { ASAP_BASE_URL, ASAP_WEBHOOK_SECRET } from "../env";
-import { bot } from "../telegram/zazu_vendor_acct";
+import { getVendorBot } from "../telegram/registry";
 import { sendRatingPrompt } from "../telegram/handlers";
 import { getOrderContext, getOrderForEscrow, updateOrderStatus } from "../db/queries";
 import { transferTo } from "./payment/paystackTransfer";
@@ -76,6 +76,7 @@ router.post("/driver-arrived", verifyAsapSecret, async (req, res) => {
 
   const { telegramId, vendorId } = context;
 
+  const bot = getVendorBot(vendorId);
   bot.sendMessage(telegramId, "Your delivery has arrived!").catch(() => {});
 
   setTimeout(() => {

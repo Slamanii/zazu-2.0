@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
-import "./src/telegram/zazu_main_client";
-import "./src/telegram/zazu_vendor_acct";
+import { startBotRegistry, stopBotRegistry } from "./src/telegram/registry";
 import ridesRouter from "./src/api/rides";
 import payRouter from "./src/api/pay";
 import menuRouter from "./src/api/menu";
@@ -25,3 +24,11 @@ app.use(webhookRouter);
 app.listen(4000, () => {
   console.log("Zazu listening on port 4000");
 });
+
+void startBotRegistry().catch(() => {
+  console.error("[bots] Startup failed; check the server Supabase credential and telegram_bots access");
+  process.exit(1);
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => { void stopBotRegistry().finally(() => process.exit(0)); });
+}

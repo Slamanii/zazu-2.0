@@ -56,7 +56,8 @@ router.post("/paystack-webhook", async (req, res) => {
   if (!order) return;
 
   const chatId = order.telegram_orders.user_id;
-  const { bot } = await import("../telegram/zazu_vendor_acct");
+  const { getVendorBot } = await import("../telegram/registry");
+  const bot = getVendorBot(order.telegram_orders.vendor_id);
   await bot.sendMessage(
     chatId,
     `✅ Payment confirmed! Your order is being prepared.`,

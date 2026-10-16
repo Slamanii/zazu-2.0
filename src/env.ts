@@ -1,19 +1,8 @@
 export const DEV_MODE = process.env.DEV_MODE === "true";
 
-export const ZAZU_MAIN_BOT = "8521586068:AAGTL6ymUHXKwSL6WV9s1XUqsb-mv_zU128";
-
-export const PRODUCTION_VENDOR_BOT =
-  "8589823390:AAE56F5jcl_JXwJyX_MjDqD70vb4D-X4gwQ";
-export const DEVELOPMENT_VENDOR_BOT =
-  "8817157876:AAHfz4vMGgGS0OQwfXPgMTcU8ncdtIc6Zik";
-export const VENDOR_BOT = DEV_MODE
-  ? DEVELOPMENT_VENDOR_BOT
-  : PRODUCTION_VENDOR_BOT;
-
 export const SUPABASE_URL = "https://edtsmqjnkakaaujmmhip.supabase.co";
 
-export const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkdHNtcWpua2FrYWF1am1taGlwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTQzNDk0MSwiZXhwIjoyMDc3MDEwOTQxfQ.vRZZE1pZ5koj3cxoRPtxgUPlO7I1ZrOP-Mk_2dMfKx8";
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 
 export const PAYSTACK_SECRET_KEY =
   "sk_test_d375c669a48bd40529125830f6d401ce5c14d95f";

@@ -10,7 +10,7 @@ import {
 } from "./handlers";
 import {
   getPaymentStatus,
-  getVendorByBotUsername,
+  getVendorBotByVendorId,
   getUserByTelegramId,
   updatePaystackRef,
   updatePaymentStatus,
@@ -19,24 +19,7 @@ import {
   getVendorForBot,
 } from "../db/queries";
 import { zazuId } from "./zazu_main_client";
-import { VENDOR_BOT } from "../env";
 
-export const bot = new TelegramBot(VENDOR_BOT, { polling: true });
-
-bot.on("polling_error", (err) =>
-  console.error("[VENDOR_BOT] polling error:", err.message),
-);
-
-bot.on("update", (update) => {
-  console.log("[VENDOR_BOT] update:", JSON.stringify(update, null, 2));
-});
-
-bot.setMyCommands([
-  { command: "start", description: "Get started" },
-  { command: "menu", description: "Browse the menu" },
-  { command: "cart", description: "View your cart" },
-  { command: "location", description: "View or update your delivery location" },
-]);
 
 export const preflightResults = new Map<
   number,
@@ -49,11 +32,12 @@ export const preflightResults = new Map<
 >();
 
 // ── /menu ────────────────────────────────────────────────
+export function attachVendorHandlers(bot: TelegramBot, vendorId: number) {
 bot.onText(/\/menu/, async (msg: Message) => {
   try {
     const me = await bot.getMe();
     const bot_info = { id: me.id, username: me.username };
-    const vendor_info = await getVendorByBotUsername(bot_info.username!);
+    const vendor_info = await getVendorBotByVendorId(vendorId);
 
     const vendor = await getVendorForBot(vendor_info.vendor_id);
 
@@ -119,7 +103,7 @@ bot.onText(/\/cart/, async (msg: Message) => {
   if (!userId) return;
 
   const me = await bot.getMe();
-  const vendor_info = await getVendorByBotUsername(me.username!);
+  const vendor_info = await getVendorBotByVendorId(vendorId);
   await sendCartSummary(bot, chatId, userId, vendor_info.vendor_id);
 });
 
@@ -128,7 +112,7 @@ bot.on("callback_query", async (query: CallbackQuery) => {
   const chatId = query.message?.chat.id;
   try {
     const me = await bot.getMe();
-    const vendor_info = await getVendorByBotUsername(me.username!);
+    const vendor_info = await getVendorBotByVendorId(vendorId);
     await onButtonClick(bot, query, vendor_info.vendor_id);
   } catch (err: any) {
     console.error("[VENDOR_BOT] callback_query error:", err.message, err);
@@ -179,7 +163,7 @@ bot.on("message", async (msg) => {
 
       try {
         const me = await bot.getMe();
-        const vendor_info = await getVendorByBotUsername(me.username!);
+        const vendor_info = await getVendorBotByVendorId(vendorId);
         const [vendor, userDb] = await Promise.all([
           getVendorForBot(vendor_info.vendor_id),
           getUserByTelegramId(userId),
@@ -345,7 +329,7 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
 
   const me = await bot.getMe();
   const bot_info = { id: me.id, username: me.username };
-  const vendor_info = await getVendorByBotUsername(bot_info.username!);
+  const vendor_info = await getVendorBotByVendorId(vendorId);
 
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -415,3 +399,5 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
     });
   }
 });
+
+}

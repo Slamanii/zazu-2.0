@@ -403,3 +403,11 @@ export async function getPaymentByReference(reference: number) {
   if (error || !data) throw error;
   return data;
 }
+
+export async function getVendorBotByVendorId(vendorId: number) {
+  const { data, error } = await supabase.from("telegram_bots")
+    .select("vendor_id, bot_id, bot_username, is_active")
+    .eq("vendor_id", vendorId).eq("is_active", true).single();
+  if (error) throw error;
+  return data;
+}

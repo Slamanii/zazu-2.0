@@ -31,7 +31,7 @@ import {
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
-import { ZAZU_MAIN_BOT, ASAP_WEBHOOK_SECRET } from "../env";
+import { ASAP_WEBHOOK_SECRET } from "../env";
 import { INTERNAL_URL, PUBLIC_URL, DEV_MODE } from "../env";
 import { CartItem, CartState } from "../types";
 import axios from "axios";
@@ -556,7 +556,8 @@ export async function handlePayStart(
 
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
 
-  const deepLink = `https://t.me/${ZAZU_MAIN_BOT}?start=pay_${encoded}`;
+  const me = await bot.getMe();
+  const deepLink = `https://t.me/${me.username}?start=pay_${encoded}`;
 
   await bot.sendMessage(chatId, `Redirecting to payment...\n${deepLink}`);
 }
