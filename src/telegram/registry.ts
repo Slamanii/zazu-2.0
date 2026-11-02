@@ -75,7 +75,11 @@ export async function refreshBots() {
         if (isMain(row)) attachMainHandlers(bot);
         else attachVendorHandlers(bot, Number(row.vendor_id));
         stage = "command registration";
-        await bot.setMyCommands([
+        await bot.setMyCommands(isMain(row) ? [
+          { command: "start", description: "Open Zazu Marketplace" },
+          { command: "search", description: "Find vendors" },
+          { command: "help", description: "Help and commands" },
+        ] : [
           { command: "start", description: "Get started" },
           { command: "menu", description: "Browse the menu" },
           { command: "cart", description: "View your cart" },
