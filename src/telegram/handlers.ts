@@ -25,7 +25,8 @@ import {
   getVendorForBot,
   insertRating,
   getVendorAverageRating,
-  savePickupCode,
+  saveDispatchRequest,
+  getVendorPayout,
   updateCartMessageId,
   insertFakeDriversNear,
 } from "../db/queries";
@@ -588,19 +589,35 @@ export async function callASAP(
       weight: 3.0,
     }));
 
+    const order = orderData[0];
+    if (!order?.order_ref) {
+      console.error(`[ride-request] order=${orderId} has no order_ref`);
+      await bot.sendMessage(chatId, "Could not create ride request 😔");
+      return null;
+    }
+    // The backend requires the customer's phone for Zazu orders.
+    if (!userPhoneNumber) {
+      await bot.sendMessage(chatId, "Please share your phone number with /start so the driver can reach you, then try again.");
+      return null;
+    }
+    const vendor = await getVendorPayout(vendorId).catch(() => null);
+
     const ride_request_payload = {
+      order_ref: order.order_ref,
       rider_id: riderId,
+      customer_phone: userPhoneNumber,
       pick_up: pickupPoint,
       drop_off: dropoffPoint,
       ride_type: rideType,
       payment_method: paymentMethod,
       items: itemDetails,
-      order_id: orderData[0]?.order_ref ?? null,
+      pickup_name: vendor?.name,
+      pickup_contact_name: vendor?.name,
+      pickup_contact_phone: vendorPhoneNumber,
       user_id: userId,
       user_phone_number: userPhoneNumber,
       vendor_phone_number: vendorPhoneNumber,
     };
-    
 
     const response = await axios.post(
       `${INTERNAL_URL}/ride-request`,
@@ -615,9 +632,11 @@ export async function callASAP(
       return null;
     }
 
-    const orderPayload = await orderComingThrough(rideData, orderData, rideType);
+    await saveDispatchRequest(order.id, rideType, userPhoneNumber).catch((err) =>
+      console.error("Failed to save ride request details:", err.message),
+    );
 
-    return orderPayload;
+    return orderComingThrough(rideData, orderData);
   } catch (err: any) {
     const body = err.response?.data;
     console.error("Error sending ride request to Zazu-Main:", err.message, JSON.stringify(body, null, 2));
@@ -626,20 +645,14 @@ export async function callASAP(
   }
 }
 
-async function orderComingThrough(rideDetails: any, orderDetails: any, rideType: string) {
-  const pickupCode = String(Math.floor(100000 + Math.random() * 900000));
-  const orderId = orderDetails[0]?.id;
-  if (orderId) {
-    await savePickupCode(orderId, pickupCode, rideType).catch((err) =>
-      console.error("Failed to save pickup code:", err.message),
-    );
-  }
+// The ride-request answer only says the driver search has started (SearchStarted). The driver,
+// the pickup code and the drop-off code come later from the backend in /ride-details; Zazu no
+// longer makes its own pickup code.
+function orderComingThrough(rideDetails: any, orderDetails: any) {
   return {
-    eta: rideDetails.estimated_arrival,
-    timeInMin: rideDetails.estimated_time_min,
-    status: rideDetails.validation_status,
-    driverInfo: rideDetails.driver_assigned,
-    pickupCode,
+    eta: rideDetails.estimated_arrival as string | undefined,
+    status: rideDetails.status as string | undefined,
+    estimatedPrice: rideDetails.estimated_price as number | undefined,
     orderDetails,
   };
 }

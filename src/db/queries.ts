@@ -296,42 +296,148 @@ export async function getOrderContext(orderId: number): Promise<{ telegramId: nu
   return { telegramId: data.user_id, vendorId: data.vendor_id };
 }
 
-export async function savePickupCode(orderId: number, pickupCode: string, rideType: string) {
+// ---------- Dispatch (ASAP backend pushes) ----------
+
+const DISPATCH_COLUMNS =
+  "id, user_id, vendor_id, status, subtotal, delivery_fee, ride_type, order_ref, " +
+  "asap_status, no_driver_retries, driver_id, driver_name, driver_phone, " +
+  "driver_account_number, driver_bank_code, pickup_code, dropoff_code";
+
+export type DispatchOrder = {
+  id: number;
+  user_id: number;
+  vendor_id: number;
+  status: string;
+  subtotal: number;
+  delivery_fee: number;
+  ride_type: string;
+  order_ref: string;
+  asap_status: string | null;
+  no_driver_retries: number;
+  driver_id: string | null;
+  driver_name: string | null;
+  driver_phone: string | null;
+  driver_account_number: string | null;
+  driver_bank_code: string | null;
+  pickup_code: string | null;
+  dropoff_code: string | null;
+};
+
+export async function getOrderByRef(orderRef: string): Promise<DispatchOrder | null> {
+  const { data, error } = await supabase
+    .from("telegram_orders")
+    .select(DISPATCH_COLUMNS)
+    .eq("order_ref", orderRef)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DispatchOrder | null;
+}
+
+// Records an /order-status push, unless the order already holds one at least as new: pushes can
+// arrive out of order or twice when the backend retries. The check and the write are one
+// conditional UPDATE, so two copies of the same push cannot both get through.
+// Returns the updated order, or null when the push is stale or the order_ref is unknown.
+export async function applyOrderStatus(
+  orderRef: string,
+  asapStatus: string,
+  updatedAt: string,
+): Promise<DispatchOrder | null> {
+  const now = new Date().toISOString();
+  const changes: Record<string, unknown> = {
+    asap_status: asapStatus,
+    asap_status_at: updatedAt,
+    updated_at: now,
+  };
+  if (asapStatus === "in_transit") {
+    changes.status = "in_progress";
+    changes.pickup_confirmed_at = now;
+  } else if (asapStatus === "delivered") {
+    changes.status = "delivered";
+  } else if (asapStatus === "cancelled") {
+    changes.status = "cancelled";
+    changes.cancelled_at = now;
+  }
+  const { data, error } = await supabase
+    .from("telegram_orders")
+    .update(changes)
+    .eq("order_ref", orderRef)
+    .or(`asap_status_at.is.null,asap_status_at.lt."${updatedAt}"`)
+    .select(DISPATCH_COLUMNS)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DispatchOrder | null;
+}
+
+export async function countNoDriverRetry(orderId: number, retries: number) {
   const { error } = await supabase
     .from("telegram_orders")
-    .update({ pickup_code: pickupCode, ride_type: rideType })
+    .update({ no_driver_retries: retries })
     .eq("id", orderId);
   if (error) throw error;
 }
 
-export async function getOrderForEscrow(orderRef: string) {
-  const { data: order, error: oErr } = await supabase
+// /ride-details is an upsert by order_ref: it is sent again when the order is reassigned.
+// The codes are the backend's own; the driver enters them in the driver app.
+export async function saveRideDetails(orderRef: string, details: {
+  driver_id: string | null;
+  driver_name: string | null;
+  driver_phone: string | null;
+  driver_account_number: string | null;
+  driver_bank_code: string | null;
+  pickup_code: string | null;
+  dropoff_code: string | null;
+}) {
+  const now = new Date().toISOString();
+  const { error } = await supabase
     .from("telegram_orders")
-    .select("id, subtotal, delivery_fee, ride_type, pickup_code, status, vendor_id")
-    .eq("order_ref", orderRef)
-    .single();
-  if (oErr || !order) throw new Error("Order not found");
-
-  const { data: vendor, error: vErr } = await supabase
-    .from("telegram_vendor")
-    .select("name, acct_details")
-    .eq("id", order.vendor_id)
-    .single();
-  if (vErr || !vendor) throw new Error("Vendor not found");
-
-  return {
-    order: order as {
-      id: number; subtotal: number; delivery_fee: number;
-      ride_type: string; pickup_code: string; status: string; vendor_id: number;
-    },
-    vendor: vendor as {
-      name: string;
-      acct_details: { bank_account_number: string; bank_code: string };
-    },
-  };
+    .update({ ...details, driver_assigned_at: now, updated_at: now })
+    .eq("order_ref", orderRef);
+  if (error) throw error;
 }
 
-// ---------- Ratings ----------
+// Marks a payout as started, once: returns false when it was already claimed, so a repeated
+// delivered push never pays twice. releasePayout undoes the claim when the transfer fails.
+export async function claimPayout(orderId: number, who: "vendor" | "driver"): Promise<boolean> {
+  const column = `${who}_paid_at`;
+  const { data, error } = await supabase
+    .from("telegram_orders")
+    .update({ [column]: new Date().toISOString() })
+    .eq("id", orderId)
+    .is(column, null)
+    .select("id");
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+export async function releasePayout(orderId: number, who: "vendor" | "driver") {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ [`${who}_paid_at`]: null })
+    .eq("id", orderId);
+  if (error) throw error;
+}
+
+export async function saveDispatchRequest(orderId: number, rideType: string, customerPhone: string) {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ ride_type: rideType, customer_phone: customerPhone, no_driver_retries: 0 })
+    .eq("id", orderId);
+  if (error) throw error;
+}
+
+export async function getVendorPayout(vendorId: number) {
+  const { data, error } = await supabase
+    .from("telegram_vendor")
+    .select("name, user_id, acct_details")
+    .eq("id", vendorId)
+    .single();
+  if (error || !data) throw new Error("Vendor not found");
+  return data as {
+    name: string;
+    user_id: number | null;
+    acct_details: { bank_account_number: string; bank_code: string } | null;
+  };
+}
 
 export async function insertRating(
   userId: number,

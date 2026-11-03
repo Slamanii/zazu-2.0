@@ -210,16 +210,12 @@ bot.on("message", async (msg) => {
 
         await upsertCart(userId, vendor_info.vendor_id, [], 0, "checked_out");
 
-        if (orderPayload?.driverInfo) {
+        if (orderPayload) {
           await bot.sendMessage(
             chatId,
-            `Driver: ${orderPayload.driverInfo.name} — ${orderPayload.driverInfo.phone}\n` +
-              `ETA: ${orderPayload.eta} (${orderPayload.timeInMin} mins)\n` +
-              `Pickup Code: ${orderPayload.pickupCode}\n` +
-              `Order Total: ₦${orderPayload.orderDetails.total}`,
+            `Order placed! Finding a driver for you...\nOrder Total: ₦${orderPayload.orderDetails[0]?.total ?? ""}\n` +
+              "You'll get the driver's details and your drop-off code as soon as a driver accepts.",
           );
-        } else if (orderPayload) {
-          await bot.sendMessage(chatId, "Order placed! Finding a driver for you...");
         }
       } catch (err: any) {
         console.error("Web App payment handler error:", err.message);
@@ -371,16 +367,12 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
       vendor_info.vendor_id,
     );
 
-    if (orderPayload?.driverInfo) {
+    if (orderPayload) {
       await bot.sendMessage(
         chatId,
-        `Driver: ${orderPayload.driverInfo.name} — ${orderPayload.driverInfo.phone}\n` +
-          `ETA: ${orderPayload.eta} (${orderPayload.timeInMin} mins)\n` +
-          `Pickup Code: ${orderPayload.pickupCode}\n` +
-          `Order Total: ₦${orderPayload.orderDetails.total}`,
+        `Order placed! Finding a driver for you...\nOrder Total: ₦${orderPayload.orderDetails[0]?.total ?? ""}\n` +
+          "You'll get the driver's details and your drop-off code as soon as a driver accepts.",
       );
-    } else if (orderPayload) {
-      await bot.sendMessage(chatId, "Order placed! Finding a driver for you...");
     } else {
       await bot.sendMessage(chatId, "Could not get delivery info 😔");
     }
