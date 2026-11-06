@@ -19,6 +19,7 @@ import {
   getVendorForBot,
 } from "../db/queries";
 import { zazuId } from "./zazu_main_client";
+import { WEB_APP_ENABLED, webAppUrl } from "./webapp_url";
 
 
 export const preflightResults = new Map<
@@ -45,9 +46,13 @@ bot.onText(/\/menu/, async (msg: Message) => {
       return bot.sendMessage(msg.chat.id, "No categories found.");
     }
 
-    const keyboard = vendor.categories.map((cat) => [
+    const keyboard: TelegramBot.InlineKeyboardButton[][] = vendor.categories.map((cat) => [
       { text: cat.name, callback_data: `OPEN_CATEGORY:${cat.id}` },
     ]);
+    // The web menu first; the category buttons stay for anyone who prefers the chat.
+    if (WEB_APP_ENABLED) {
+      keyboard.unshift([{ text: "🛍 Open full menu", web_app: { url: webAppUrl(vendorId) } }]);
+    }
 
     const rmsg = await bot.sendMessage(msg.chat.id, "...", { reply_markup: { remove_keyboard: true } });
     await bot.deleteMessage(msg.chat.id, rmsg.message_id).catch(() => {});
@@ -210,16 +215,12 @@ bot.on("message", async (msg) => {
 
         await upsertCart(userId, vendor_info.vendor_id, [], 0, "checked_out");
 
-        if (orderPayload?.driverInfo) {
+        if (orderPayload) {
           await bot.sendMessage(
             chatId,
-            `Driver: ${orderPayload.driverInfo.name} — ${orderPayload.driverInfo.phone}\n` +
-              `ETA: ${orderPayload.eta} (${orderPayload.timeInMin} mins)\n` +
-              `Pickup Code: ${orderPayload.pickupCode}\n` +
-              `Order Total: ₦${orderPayload.orderDetails.total}`,
+            `Order placed! Finding a driver for you...\nOrder Total: ₦${orderPayload.orderDetails[0]?.total ?? ""}\n` +
+              "You'll get the driver's details and your drop-off code as soon as a driver accepts.",
           );
-        } else if (orderPayload) {
-          await bot.sendMessage(chatId, "Order placed! Finding a driver for you...");
         }
       } catch (err: any) {
         console.error("Web App payment handler error:", err.message);
@@ -232,6 +233,31 @@ bot.on("message", async (msg) => {
     return;
   }
 
+});
+
+// ── /start menu — arriving from the Zazu marketplace ────
+bot.onText(/^\/start menu$/, async (msg: Message) => {
+  const vendor = await getVendorForBot(vendorId).catch(() => null);
+  const name = (vendor as any)?.name ?? "our store";
+  await bot.sendMessage(
+    msg.chat.id,
+    `Welcome to ${name}! Tap below to browse the menu and order.`,
+    WEB_APP_ENABLED
+      ? { reply_markup: { inline_keyboard: [[{ text: "🛍 Open menu", web_app: { url: webAppUrl(vendorId) } }]] } }
+      : {},
+  ).catch(() => {});
+  if (!WEB_APP_ENABLED) await bot.sendMessage(msg.chat.id, "Type /menu to see what's available.").catch(() => {});
+  // The rider needs the customer's phone, so new customers are asked for it up front.
+  const user = msg.from ? await getUserByTelegramId(msg.from.id).catch(() => null) : null;
+  if (!user?.phone) {
+    await bot.sendMessage(msg.chat.id, "Please share your phone number so the rider can reach you.", {
+      reply_markup: {
+        keyboard: [[{ text: "Share Phone Number", request_contact: true }]],
+        one_time_keyboard: true,
+        resize_keyboard: true,
+      },
+    }).catch(() => {});
+  }
 });
 
 // ── /start (no param) — onboarding ──────────────────────
@@ -371,16 +397,12 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
       vendor_info.vendor_id,
     );
 
-    if (orderPayload?.driverInfo) {
+    if (orderPayload) {
       await bot.sendMessage(
         chatId,
-        `Driver: ${orderPayload.driverInfo.name} — ${orderPayload.driverInfo.phone}\n` +
-          `ETA: ${orderPayload.eta} (${orderPayload.timeInMin} mins)\n` +
-          `Pickup Code: ${orderPayload.pickupCode}\n` +
-          `Order Total: ₦${orderPayload.orderDetails.total}`,
+        `Order placed! Finding a driver for you...\nOrder Total: ₦${orderPayload.orderDetails[0]?.total ?? ""}\n` +
+          "You'll get the driver's details and your drop-off code as soon as a driver accepts.",
       );
-    } else if (orderPayload) {
-      await bot.sendMessage(chatId, "Order placed! Finding a driver for you...");
     } else {
       await bot.sendMessage(chatId, "Could not get delivery info 😔");
     }

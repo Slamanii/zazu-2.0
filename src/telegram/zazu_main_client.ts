@@ -2,6 +2,7 @@ import TelegramBot, { CallbackQuery, Message } from "node-telegram-bot-api";
 import { supabase } from "../db/supabase";
 import { createPaystackLink } from "../api/payment/paystack";
 import { updatePaystackRef, upsertUserLocation } from "../db/queries";
+import { WEB_APP_ENABLED, webAppUrl } from "./webapp_url";
 
 
 
@@ -46,7 +47,9 @@ export function attachMainHandlers(bot: TelegramBot) {
     }
   }
   bot.onText(/^\/(?:start|help)(?:@[A-Za-z0-9_]+)?\s*$/i, async msg => {
-    await bot.sendMessage(msg.chat.id, help).catch(() => {});
+    await bot.sendMessage(msg.chat.id, help, WEB_APP_ENABLED
+      ? { reply_markup: { inline_keyboard: [[{ text: "🛍 Open marketplace", web_app: { url: webAppUrl(null) } }]] } }
+      : {}).catch(() => {});
   });
   bot.onText(/^\/(?:search|menu)(?:@[A-Za-z0-9_]+)?(?:\s+(.+))?\s*$/i, async (msg, match) => {
     await replyWithVendors(msg.chat.id, match?.[1]?.trim() ?? "");

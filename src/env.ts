@@ -20,3 +20,9 @@ export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 export const INTERNAL_URL = process.env.INTERNAL_URL ?? "http://localhost:4000";
 export const PUBLIC_URL =
   process.env.PUBLIC_URL ?? "https://18-130-60-168.sslip.io";
+// The base URL the ASAP backend calls back on (/order-status, /ride-details, /driver-arrived),
+// registered with POST /drivers/register-zazu-url. Defaults to PUBLIC_URL.
+export const ZAZU_CALLBACK_URL = process.env.ZAZU_CALLBACK_URL ?? PUBLIC_URL;
+// How many times Zazu asks for a new driver search after no_driver before giving up on an
+// order. 0 (the default) keeps retrying until a driver takes it; the backend sets no limit.
+export const NO_DRIVER_MAX_RETRIES = Number(process.env.NO_DRIVER_MAX_RETRIES ?? 0) || 0;

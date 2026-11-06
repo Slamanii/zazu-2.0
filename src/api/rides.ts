@@ -1,14 +1,24 @@
-import { Router } from "express";
-import axios from "axios";
-import { ASAP_BASE_URL, ASAP_WEBHOOK_SECRET } from "../env";
+import { Router, Request, Response, NextFunction } from "express";
+import TelegramBot from "node-telegram-bot-api";
+import { ASAP_WEBHOOK_SECRET, NO_DRIVER_MAX_RETRIES } from "../env";
 import { getVendorBot } from "../telegram/registry";
 import { sendRatingPrompt } from "../telegram/handlers";
-import { getOrderContext, getOrderForEscrow, updateOrderStatus } from "../db/queries";
+import {
+  DispatchOrder,
+  applyOrderStatus,
+  claimPayout,
+  countNoDriverRetry,
+  getOrderByRef,
+  getVendorPayout,
+  releasePayout,
+  saveRideDetails,
+} from "../db/queries";
 import { transferTo } from "./payment/paystackTransfer";
-import { Request, Response, NextFunction } from "express";
+import { AsapError, assignDriver, preflight, requestRide } from "./asap";
 
+// Every call between Zazu and the ASAP backend carries the shared secret, both ways.
 function verifyAsapSecret(req: Request, res: Response, next: NextFunction) {
-  if (req.headers["x-asap-secret"] !== ASAP_WEBHOOK_SECRET) {
+  if (!ASAP_WEBHOOK_SECRET || req.headers["x-asap-secret"] !== ASAP_WEBHOOK_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
@@ -16,118 +26,258 @@ function verifyAsapSecret(req: Request, res: Response, next: NextFunction) {
 
 const router = Router();
 
-router.post("/ride-preflight", verifyAsapSecret, async (req, res) => {
-  const payload = req.body;
-
-  console.log("Received preflight:", payload);
-
+function botFor(order: DispatchOrder): TelegramBot | null {
   try {
-    const preflightResponse = await axios.post(
-      `${ASAP_BASE_URL}/drivers/ride-preflight`,
-      payload,
-    );
-
-    res.json(preflightResponse.data);
+    return getVendorBot(order.vendor_id);
   } catch (err: any) {
-    const body = err.response?.data;
-    console.error("Error calling ASAP preflight:", err.message, JSON.stringify(body, null, 2));
+    console.error(`[dispatch] order=${order.id}: ${err.message}`);
+    return null;
+  }
+}
+
+async function tellCustomer(order: DispatchOrder, text: string) {
+  await botFor(order)?.sendMessage(order.user_id, text).catch((err) =>
+    console.error(`[dispatch] order=${order.id}: could not message customer: ${err.message}`),
+  );
+}
+
+// The vendor is the sender: they hand the package and the pickup code to the driver. Only
+// vendors with a Telegram user_id on file can be messaged.
+async function tellVendor(order: DispatchOrder, text: string) {
+  const vendor = await getVendorPayout(order.vendor_id).catch(() => null);
+  if (!vendor?.user_id) {
+    console.warn(`[dispatch] order=${order.id}: vendor ${order.vendor_id} has no Telegram user_id; not messaged`);
+    return;
+  }
+  await botFor(order)?.sendMessage(vendor.user_id, text).catch((err) =>
+    console.error(`[dispatch] order=${order.id}: could not message vendor: ${err.message}`),
+  );
+}
+
+// ---------- Zazu -> ASAP ----------
+
+router.post("/ride-preflight", verifyAsapSecret, async (req, res) => {
+  try {
+    res.json(await preflight(req.body));
+  } catch (err: any) {
+    console.error("Error calling ASAP preflight:", err.message);
     res.status(500).json({ can_serve: false, error: err.message });
   }
 });
 
+// Places the order with the backend, once. The answer only says the driver search started;
+// the driver arrives later in /ride-details.
 router.post("/ride-request", verifyAsapSecret, async (req, res) => {
-  const payload = {
-    ...req.body,
-    ride_type: "ASAPEXPRESS",
-  };
-
+  const payload = { ...req.body, ride_type: "ASAPEXPRESS" };
   console.log("Received Ride Request", JSON.stringify(payload, null, 2));
 
   try {
-    const rideResponse = await axios.post(
-      `${ASAP_BASE_URL}/riders/ride-request`,
-      payload,
-    );
-
-    console.log("Ride assignment:", JSON.stringify(rideResponse.data, null, 2));
-    res.json({ success: true, ...rideResponse.data });
+    const started = await requestRide(payload);
+    console.log("Driver search started:", JSON.stringify(started));
+    res.json({ success: true, ...started });
   } catch (err: any) {
-    const body = err.response?.data;
-    console.error("Error calling ASAP API:", err.message, JSON.stringify(body, null, 2));
+    console.error("Error calling ASAP API:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Called by ASAP when driver coordinates coincide with pickup location
-router.post("/driver-arrived", verifyAsapSecret, async (req, res) => {
-  const { order_id, driver_lat, driver_lng } = req.body;
+// ---------- ASAP -> Zazu ----------
+// Each one answers 2xx straight away and does the work after: the backend retries on a timeout
+// or a 5xx. A 4xx is not retried, so only a payload that can never be handled gets one.
 
-  console.log(`[driver-arrived] order=${order_id} driver=(${driver_lat},${driver_lng})`);
-
+// Sent when an order becomes no_driver, in_transit, delivered or cancelled.
+router.post("/order-status", verifyAsapSecret, async (req, res) => {
+  const { order_ref, status, updated_at } = req.body ?? {};
+  if (typeof order_ref !== "string" || typeof status !== "string" || typeof updated_at !== "string") {
+    return res.status(400).json({ error: "order_ref, status and updated_at are required" });
+  }
   res.json({ received: true });
 
-  const orderIdNum = Number(order_id);
+  try {
+    const order = await applyOrderStatus(order_ref, status, updated_at);
+    if (!order) {
+      console.log(`[order-status] order_ref=${order_ref} ${status} ignored: unknown order or an older push`);
+      return;
+    }
+    console.log(`[order-status] order=${order.id} ${status}`);
 
-  const context = await getOrderContext(orderIdNum);
-  if (!context) {
-    console.error(`[driver-arrived] no order found for order=${orderIdNum}`);
-    return;
+    switch (status) {
+      case "no_driver":
+        return await retryDriverSearch(order);
+      case "in_transit":
+        return await tellCustomer(
+          order,
+          "🛵 Your order has been picked up and is on its way!" +
+            (order.dropoff_code ? `\nGive the driver this drop-off code when it arrives: ${order.dropoff_code}` : ""),
+        );
+      case "delivered":
+        await tellCustomer(order, "✅ Your order has been delivered. Enjoy!");
+        await payOut(order);
+        {
+          const bot = botFor(order);
+          if (bot) {
+            await sendRatingPrompt(bot, order.user_id, order.vendor_id, order.id).catch((err) =>
+              console.error(`[order-status] order=${order.id}: rating prompt error: ${err.message}`),
+            );
+          }
+        }
+        return;
+      case "cancelled":
+        return await tellCustomer(order, "❌ Your delivery was cancelled. Please contact support if you need help.");
+      default:
+        console.warn(`[order-status] order=${order.id}: unhandled status ${status}`);
+    }
+  } catch (err: any) {
+    console.error(`[order-status] order_ref=${order_ref}: ${err.message}`);
   }
-
-  const { telegramId, vendorId } = context;
-
-  const bot = getVendorBot(vendorId);
-  bot.sendMessage(telegramId, "Your delivery has arrived!").catch(() => {});
-
-  setTimeout(() => {
-    sendRatingPrompt(bot, telegramId, vendorId, orderIdNum)
-      .catch((err) => console.error("[driver-arrived] rating prompt error:", err.message));
-  }, 5 * 60 * 1000);
 });
 
-// Called by ASAP when driver enters pickup code in app
-router.post("/confirm-pickup", verifyAsapSecret, async (req, res) => {
-  const { order_id, pickup_code, driver_account_number, driver_bank_code } = req.body;
+// No driver took the order in the search window: ask the backend to search again (wider radius).
+// Never re-sends the ride request. The backend sets no limit; NO_DRIVER_MAX_RETRIES can.
+async function retryDriverSearch(order: DispatchOrder) {
+  const attempt = (order.no_driver_retries ?? 0) + 1;
+  if (NO_DRIVER_MAX_RETRIES > 0 && attempt > NO_DRIVER_MAX_RETRIES) {
+    console.error(`[order-status] order=${order.id}: no driver after ${NO_DRIVER_MAX_RETRIES} retries; giving up`);
+    await tellCustomer(order, "😔 We couldn't find a driver for your order. Please contact support.");
+    return;
+  }
+  await countNoDriverRetry(order.id, attempt);
+  if (attempt === 1) {
+    await tellCustomer(order, "⏳ Drivers nearby are busy. We're still searching for one for you...");
+  }
 
   try {
-    const { order, vendor } = await getOrderForEscrow(String(order_id));
+    await assignDriver(order.order_ref);
+    console.log(`[order-status] order=${order.id}: driver search restarted (retry ${attempt})`);
+  } catch (err) {
+    const status = err instanceof AsapError ? err.status : undefined;
+    // 409: it already has a driver or is closed; the latest push says which. 403/404: never
+    // retryable. Anything else (backend down) is logged; the next no_driver push retries again.
+    console.error(`[order-status] order=${order.id}: retry refused (${status ?? "no answer"}): ${(err as Error).message}`);
+  }
+}
 
-    if (order.status === "delivered") {
-      return res.status(400).json({ error: "Order already settled" });
-    }
+// Zazu pays the vendor and its own driver once the order is delivered. Each payout is claimed
+// first, so a repeated delivered push never pays twice; a failed transfer releases its claim.
+async function payOut(order: DispatchOrder) {
+  const zazuCut = order.ride_type === "ASAPEXPRESS" ? 0.20 : 0.35;
+  const driverAmount = Math.floor(order.delivery_fee * (1 - zazuCut));
+  const vendorAmount = order.subtotal;
+  const vendor = await getVendorPayout(order.vendor_id);
 
-    if (order.pickup_code !== String(pickup_code)) {
-      return res.status(400).json({ error: "Invalid pickup code" });
-    }
+  const payouts: Promise<void>[] = [];
 
-    const zazuCut = order.ride_type === "ASAPEXPRESS" ? 0.20 : 0.35;
-    const driverAmount = Math.floor(order.delivery_fee * (1 - zazuCut));
-    const vendorAmount = order.subtotal;
+  if (!vendor.acct_details?.bank_account_number || !vendor.acct_details?.bank_code) {
+    console.error(`[payout] order=${order.id}: vendor ${order.vendor_id} has no bank details; vendor not paid`);
+  } else {
+    payouts.push(pay(order.id, "vendor", () =>
+      transferTo(vendor.name, vendor.acct_details!.bank_account_number, vendor.acct_details!.bank_code,
+        vendorAmount, `Order #${order.id} vendor payout`)));
+  }
 
-    await Promise.all([
-      transferTo(
-        vendor.name,
-        vendor.acct_details.bank_account_number,
-        vendor.acct_details.bank_code,
-        vendorAmount,
-        `Order #${order_id} vendor payout`,
-      ),
-      transferTo(
-        "Driver",
-        driver_account_number,
-        driver_bank_code,
-        driverAmount,
-        `Order #${order_id} driver payout`,
-      ),
-    ]);
+  if (!order.driver_account_number || !order.driver_bank_code) {
+    console.error(`[payout] order=${order.id}: no driver bank details from /ride-details; driver not paid`);
+  } else {
+    payouts.push(pay(order.id, "driver", () =>
+      transferTo(order.driver_name ?? "Driver", order.driver_account_number!, order.driver_bank_code!,
+        driverAmount, `Order #${order.id} driver payout`)));
+  }
 
-    await updateOrderStatus(Number(order_id), "delivered");
+  await Promise.all(payouts);
+  console.log(`[payout] order=${order.id} vendor=₦${vendorAmount} driver=₦${driverAmount}`);
+}
 
-    console.log(`[confirm-pickup] order=${order_id} vendor=₦${vendorAmount} driver=₦${driverAmount}`);
-    res.json({ success: true });
+async function pay(orderId: number, who: "vendor" | "driver", transfer: () => Promise<void>) {
+  if (!(await claimPayout(orderId, who))) {
+    console.log(`[payout] order=${orderId}: ${who} already paid`);
+    return;
+  }
+  try {
+    await transfer();
   } catch (err: any) {
-    console.error("[confirm-pickup] error:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[payout] order=${orderId}: ${who} transfer failed: ${err.response?.data?.message ?? err.message}`);
+    await releasePayout(orderId, who).catch(() => {});
+  }
+}
+
+// Sent once a driver has taken the order, and again if it is reassigned to another driver.
+router.post("/ride-details", verifyAsapSecret, async (req, res) => {
+  const { order_ref, pick_up, drop_off, driver } = req.body ?? {};
+  if (typeof order_ref !== "string" || !driver) {
+    return res.status(400).json({ error: "order_ref and driver are required" });
+  }
+  res.json({ received: true });
+
+  try {
+    const before = await getOrderByRef(order_ref);
+    if (!before) {
+      console.error(`[ride-details] order_ref=${order_ref}: no such order`);
+      return;
+    }
+    if (before.status === "delivered" || before.status === "cancelled") {
+      console.log(`[ride-details] order=${before.id}: already ${before.status}; ignored`);
+      return;
+    }
+
+    const driverId = driver.driver_id != null ? String(driver.driver_id) : null;
+    await saveRideDetails(order_ref, {
+      driver_id: driverId,
+      driver_name: driver.name ?? null,
+      driver_phone: driver.phone ?? null,
+      driver_account_number: driver.account_number ?? null,
+      driver_bank_code: driver.bank_code ?? null,
+      pickup_code: pick_up?.code ?? null,
+      dropoff_code: drop_off?.code ?? null,
+    });
+
+    // The same driver sent twice (a backend retry) is not news.
+    if (before.driver_id === driverId && before.dropoff_code === (drop_off?.code ?? null)) return;
+    const reassigned = !!before.driver_id && before.driver_id !== driverId;
+    const order = { ...before, dropoff_code: drop_off?.code ?? null };
+    const vehicle = [driver.vehicle_type, driver.vehicle].filter(Boolean).join(" · ");
+
+    await tellCustomer(
+      order,
+      (reassigned ? "🔄 Your order has a new driver.\n" : "🚀 A driver is on the way to pick up your order!\n") +
+        `Driver: ${driver.name ?? "—"} — ${driver.phone ?? "—"}\n` +
+        (vehicle ? `Vehicle: ${vehicle}\n` : "") +
+        (drop_off?.code ? `Drop-off code: ${drop_off.code}\nGive this code to the driver only when you receive your order.` : ""),
+    );
+    if (pick_up?.code) {
+      await tellVendor(
+        order,
+        `${reassigned ? "🔄 New driver" : "🛵 Driver assigned"} for order #${order.id}.\n` +
+          `Driver: ${driver.name ?? "—"} — ${driver.phone ?? "—"}\n` +
+          `Pickup code: ${pick_up.code}\nGive this code to the driver when you hand over the package.`,
+      );
+    }
+  } catch (err: any) {
+    console.error(`[ride-details] order_ref=${order_ref}: ${err.message}`);
+  }
+});
+
+// Sent once per order when the driver comes within 150 metres of the drop-off.
+router.post("/driver-arrived", verifyAsapSecret, async (req, res) => {
+  const { order_ref, driver_lat, driver_lng } = req.body ?? {};
+  if (typeof order_ref !== "string") {
+    return res.status(400).json({ error: "order_ref is required" });
+  }
+  console.log(`[driver-arrived] order_ref=${order_ref} driver=(${driver_lat},${driver_lng})`);
+  res.json({ received: true });
+
+  try {
+    const order = await getOrderByRef(order_ref);
+    if (!order) {
+      console.error(`[driver-arrived] no order found for order_ref=${order_ref}`);
+      return;
+    }
+    await tellCustomer(
+      order,
+      "📍 Your driver is almost there!" +
+        (order.dropoff_code ? `\nHave your drop-off code ready: ${order.dropoff_code}` : ""),
+    );
+  } catch (err: any) {
+    console.error(`[driver-arrived] order_ref=${order_ref}: ${err.message}`);
   }
 });
 

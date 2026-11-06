@@ -139,3 +139,25 @@ CREATE TABLE IF NOT EXISTS telegram_vendor_ratings (
 );
 
 
+
+-- ASAP dispatch: the backend pushes /order-status and /ride-details to Zazu.
+-- asap_status / asap_status_at: the last /order-status applied; older pushes are ignored.
+-- pickup_code / dropoff_code come from the backend (Zazu no longer makes its own).
+-- vendor_paid_at / driver_paid_at: each payout is made once, when the order is delivered.
+ALTER TABLE telegram_orders
+  ADD COLUMN IF NOT EXISTS asap_status TEXT,
+  ADD COLUMN IF NOT EXISTS asap_status_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS no_driver_retries INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS dropoff_code TEXT,
+  ADD COLUMN IF NOT EXISTS driver_id TEXT,
+  ADD COLUMN IF NOT EXISTS driver_name TEXT,
+  ADD COLUMN IF NOT EXISTS driver_phone TEXT,
+  ADD COLUMN IF NOT EXISTS driver_account_number TEXT,
+  ADD COLUMN IF NOT EXISTS driver_bank_code TEXT,
+  ADD COLUMN IF NOT EXISTS driver_assigned_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS pickup_confirmed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS customer_phone TEXT,
+  ADD COLUMN IF NOT EXISTS vendor_paid_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS driver_paid_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS telegram_orders_order_ref_key ON telegram_orders (order_ref);

@@ -2,6 +2,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { supabase } from "../db/supabase";
 import { attachVendorHandlers } from "./zazu_vendor_acct";
 import { attachMainHandlers } from "./zazu_main_client";
+import { WEB_APP_ENABLED, webAppUrl } from "./webapp_url";
 
 type ManagedBot = {
   id: number; bot_id: number | string | null; bot_token: string;
@@ -18,6 +19,33 @@ export function getVendorBot(vendorId: number): TelegramBot {
     if (entry.vendorId === Number(vendorId)) return entry.bot;
   }
   throw new Error(`No active Telegram bot for vendor ${vendorId}`);
+}
+
+// The running bot for a vendor, with its token: the web menu checks Telegram's signature on the
+// viewer's data with the token of the bot that opened it.
+export function getVendorBotEntry(vendorId: number): { bot: TelegramBot; token: string } | null {
+  for (const entry of running.values()) {
+    if (entry.vendorId === Number(vendorId)) return { bot: entry.bot, token: entry.token };
+  }
+  return null;
+}
+
+export function getMainBotEntry(): { bot: TelegramBot; token: string } | null {
+  for (const entry of running.values()) {
+    if (entry.vendorId == null) return { bot: entry.bot, token: entry.token };
+  }
+  return null;
+}
+
+async function setMenuButton(bot: TelegramBot, vendorId: number | null) {
+  if (!WEB_APP_ENABLED) return;
+  await (bot as any).setChatMenuButton({
+    menu_button: JSON.stringify({
+      type: "web_app",
+      text: vendorId == null ? "Marketplace" : "Menu",
+      web_app: { url: webAppUrl(vendorId) },
+    }),
+  });
 }
 
 function isMain(row: ManagedBot): boolean {
@@ -85,6 +113,9 @@ export async function refreshBots() {
           { command: "cart", description: "View your cart" },
           { command: "location", description: "Update delivery location" },
         ]);
+        stage = "menu button";
+        await setMenuButton(bot, isMain(row) ? null : Number(row.vendor_id)).catch(() =>
+          console.error(`[bots] Could not set the menu button for managed bot ${row.id}; the bot still runs`));
         if (stopping) { bot.removeAllListeners(); break; }
         running.set(row.id, { bot, token: row.bot_token, vendorId: row.vendor_id });
         void bot.startPolling().catch(() => console.error(`[bots] Bot ${row.id} polling stopped`));
