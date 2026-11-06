@@ -1,7 +1,11 @@
-// ── Config ──────────────────────────────────────────────
-const API_BASE = window.location.origin
+// A vendor's web menu, opened from that vendor's Telegram bot (Menu button or /menu).
+// The bot puts the vendor in the URL: index.html?vendorId=12
+// Checkout sends the chosen items and Telegram's signed initData to /webapp/cart; the server
+// checks the signature, prices the items from the database and sends the cart to the chat.
 
-// ── Telegram SDK ────────────────────────────────────────
+const API_BASE = window.location.origin
+const vendorId = Number(new URLSearchParams(window.location.search).get("vendorId"))
+
 const tg = window.Telegram?.WebApp
 if (tg) {
   tg.ready()
@@ -9,180 +13,251 @@ if (tg) {
 }
 
 // ── State ───────────────────────────────────────────────
-let menuData = []   // array of categories with items
-let cart = {}       // { itemId: { name, price, qty } }
+let categories = []   // [{ id, name, items: [{ id, name, price, stock, image_url }] }]
+const cart = new Map() // itemId -> { item, qty }
+let submitting = false
 
-// ── DOM refs ────────────────────────────────────────────
-const views = {
-  categories: document.getElementById("view-categories"),
-  items:      document.getElementById("view-items"),
-  cart:       document.getElementById("view-cart"),
+// ── DOM ─────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id)
+const views = { menu: $("view-menu"), cart: $("view-cart") }
+const storeName = $("store-name")
+const storeMeta = $("store-meta")
+const backBtn = $("back-btn")
+const search = $("menu-search")
+const chips = $("category-chips")
+const menuList = $("menu-list")
+const cartList = $("cart-list")
+const cartTotal = $("cart-total")
+const cartError = $("cart-error")
+const checkoutBtn = $("checkout-btn")
+const cartFab = $("cart-fab")
+const cartFabCount = $("cart-fab-count")
+const cartFabTotal = $("cart-fab-total")
+
+// Builds an element. Text always goes in as text, never as HTML: names come from vendors.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag)
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value)
+    else if (value !== false && value != null) node.setAttribute(key, value === true ? "" : value)
+  }
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)))
+  }
+  return node
 }
-const categoryList  = document.getElementById("category-list")
-const itemList      = document.getElementById("item-list")
-const cartList      = document.getElementById("cart-list")
-const cartTotal     = document.getElementById("cart-total")
-const headerTitle   = document.getElementById("header-title")
-const backBtn       = document.getElementById("back-btn")
-const cartFab       = document.getElementById("cart-fab")
-const cartFabCount  = document.getElementById("cart-fab-count")
+
+const naira = (n) => "₦" + Number(n).toLocaleString("en-NG")
+
+function haptic(kind = "light") {
+  tg?.HapticFeedback?.impactOccurred(kind)
+}
+
+function statusMessage(text) {
+  menuList.replaceChildren(el("p", { class: "status-msg" }, text))
+}
 
 // ── Navigation ──────────────────────────────────────────
-function showView(name, title, showBack) {
-  Object.values(views).forEach(v => v.classList.remove("active"))
-  views[name].classList.add("active")
-  headerTitle.textContent = title
-  backBtn.style.display = showBack ? "block" : "none"
+function showView(name) {
+  for (const [key, view] of Object.entries(views)) view.classList.toggle("active", key === name)
+  const inCart = name === "cart"
+  backBtn.style.display = inCart && !tg ? "block" : "none"
+  if (tg) inCart ? tg.BackButton.show() : tg.BackButton.hide()
+  if (inCart) renderCart()
+  updateCartFab()
+  window.scrollTo(0, 0)
 }
 
-backBtn.addEventListener("click", () => showView("categories", "Menu", false))
+backBtn.addEventListener("click", () => showView("menu"))
+tg?.BackButton.onClick(() => showView("menu"))
+cartFab.addEventListener("click", () => showView("cart"))
 
-cartFab.addEventListener("click", () => {
-  renderCart()
-  showView("cart", "Cart", true)
-})
-
-// ── Fetch menu ──────────────────────────────────────────
+// ── Load ────────────────────────────────────────────────
 async function loadMenu() {
-  try {
-    const res = await fetch(`${API_BASE}/menu`, {
-      headers: { "ngrok-skip-browser-warning": "true" }
-    })
-    menuData = await res.json()
-    renderCategories()
-  } catch (e) {
-    categoryList.innerHTML = `<p class="loading">Could not load menu.</p>`
-  }
-}
-
-// ── Render categories ───────────────────────────────────
-function renderCategories() {
-  categoryList.innerHTML = ""
-  if (!menuData.length) {
-    categoryList.innerHTML = `<p class="loading">No categories found.</p>`
+  if (!vendorId) {
+    statusMessage("This menu link is missing its store. Please open it from the store's bot.")
     return
   }
-  menuData.forEach(cat => {
-    const card = document.createElement("div")
-    card.className = "category-card"
-    card.textContent = cat.name
-    card.addEventListener("click", () => openCategory(cat))
-    categoryList.appendChild(card)
-  })
-}
-
-// ── Render items ─────────────────────────────────────────
-function openCategory(cat) {
-  itemList.innerHTML = ""
-  cat.item.forEach(item => {
-    const inStock = item.stock > 0
-    const card = document.createElement("div")
-    card.className = "item-card"
-    card.innerHTML = `
-      <div class="item-info">
-        <div class="item-name">${item.name}</div>
-        <div class="item-price">₦${item.price}</div>
-        <div class="item-stock">${inStock ? `${item.stock} in stock` : "Out of stock"}</div>
-      </div>
-      <button class="add-btn" ${!inStock ? "disabled" : ""}>Add</button>
-    `
-    card.querySelector(".add-btn").addEventListener("click", () => addToCart(item))
-    itemList.appendChild(card)
-  })
-  showView("items", cat.name, true)
-}
-
-// ── Cart logic ───────────────────────────────────────────
-function addToCart(item) {
-  if (cart[item.id]) {
-    cart[item.id].qty += 1
-  } else {
-    cart[item.id] = { name: item.name, price: item.price, qty: 1 }
+  try {
+    const res = await fetch(`${API_BASE}/webapp/vendor?vendorId=${vendorId}`)
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    categories = data.categories
+    renderHeader(data.vendor)
+    renderChips()
+    renderMenu()
+  } catch {
+    statusMessage("Could not load the menu. Please check your connection and try again.")
   }
+}
+
+function renderHeader(vendor) {
+  storeName.textContent = vendor.name
+  document.title = vendor.name
+  const parts = []
+  if (vendor.open_now === true) parts.push("🟢 Open now")
+  if (vendor.open_now === false) parts.push(`🔴 Closed · opens ${String(vendor.open_time).slice(0, 5)}`)
+  if (vendor.rating?.count) parts.push(`⭐ ${vendor.rating.average} (${vendor.rating.count})`)
+  storeMeta.textContent = parts.join("  ·  ")
+}
+
+// ── Menu ────────────────────────────────────────────────
+function renderChips() {
+  chips.replaceChildren(...categories.map((cat) =>
+    el("button", {
+      class: "chip",
+      onclick: () => document.getElementById(`cat-${cat.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    }, cat.name),
+  ))
+  chips.style.display = categories.length > 1 ? "" : "none"
+}
+
+function renderMenu() {
+  const term = search.value.trim().toLowerCase()
+  const sections = categories
+    .map((cat) => ({ ...cat, items: cat.items.filter((i) => !term || i.name.toLowerCase().includes(term)) }))
+    .filter((cat) => cat.items.length)
+
+  if (!categories.length) return statusMessage("This store hasn't added anything to its menu yet.")
+  if (!sections.length) return statusMessage(`Nothing matches “${search.value.trim()}”.`)
+
+  menuList.replaceChildren(...sections.map((cat) =>
+    el("section", { class: "menu-section", id: `cat-${cat.id}` },
+      el("h2", {}, cat.name),
+      cat.items.map(itemCard),
+    ),
+  ))
+}
+
+function itemCard(item) {
+  const inStock = item.stock > 0
+  const qty = cart.get(item.id)?.qty ?? 0
+  const photo = item.image_url
+    ? el("img", { class: "item-photo", src: item.image_url, alt: "", loading: "lazy", onerror: (e) => e.target.remove() })
+    : null
+  const control = !inStock
+    ? el("span", { class: "sold-out" }, "Sold out")
+    : qty === 0
+      ? el("button", { class: "add-btn", onclick: () => changeQty(item, 1) }, "Add")
+      : stepper(item, qty)
+
+  return el("article", { class: `item-card${inStock ? "" : " is-sold-out"}`, "data-item": item.id },
+    photo,
+    el("div", { class: "item-info" },
+      el("h3", { class: "item-name" }, item.name),
+      el("p", { class: "item-price" }, naira(item.price)),
+      inStock && item.stock <= 5 ? el("p", { class: "item-stock" }, `Only ${item.stock} left`) : null,
+    ),
+    control,
+  )
+}
+
+function stepper(item, qty) {
+  return el("div", { class: "stepper" },
+    el("button", { class: "step-btn", "aria-label": `Remove one ${item.name}`, onclick: () => changeQty(item, -1) }, "−"),
+    el("span", { class: "step-qty" }, qty),
+    el("button", {
+      class: "step-btn",
+      "aria-label": `Add one ${item.name}`,
+      disabled: qty >= item.stock,
+      onclick: () => changeQty(item, 1),
+    }, "+"),
+  )
+}
+
+search.addEventListener("input", renderMenu)
+
+// ── Cart ────────────────────────────────────────────────
+function changeQty(item, delta) {
+  const qty = Math.min(item.stock, (cart.get(item.id)?.qty ?? 0) + delta)
+  if (qty <= 0) cart.delete(item.id)
+  else cart.set(item.id, { item, qty })
+  haptic()
+  cartError.textContent = ""
+  // Redraw just this item, and the cart if it is open.
+  const card = menuList.querySelector(`[data-item="${item.id}"]`)
+  if (card) card.replaceWith(itemCard(item))
+  if (views.cart.classList.contains("active")) renderCart()
   updateCartFab()
-  if (tg) tg.HapticFeedback?.impactOccurred("light")
+}
+
+function cartTotals() {
+  let count = 0
+  let total = 0
+  for (const { item, qty } of cart.values()) {
+    count += qty
+    total += item.price * qty
+  }
+  return { count, total }
 }
 
 function updateCartFab() {
-  const total = Object.values(cart).reduce((s, i) => s + i.qty, 0)
-  cartFabCount.textContent = total
-  total > 0 ? cartFab.classList.add("visible") : cartFab.classList.remove("visible")
+  const { count, total } = cartTotals()
+  const onMenu = views.menu.classList.contains("active")
+  cartFabCount.textContent = count
+  cartFabTotal.textContent = naira(total)
+  cartFab.classList.toggle("visible", onMenu && count > 0)
 }
 
 function renderCart() {
-  cartList.innerHTML = ""
-  const items = Object.entries(cart)
+  const lines = [...cart.values()]
+  const { total } = cartTotals()
+  cartTotal.textContent = naira(total)
+  checkoutBtn.disabled = !lines.length || submitting
 
-  if (!items.length) {
-    cartList.innerHTML = `<p class="empty-msg">Your cart is empty</p>`
-    cartTotal.textContent = ""
-    hideMainButton()
+  if (!lines.length) {
+    cartList.replaceChildren(el("p", { class: "status-msg" }, "Your order is empty."))
     return
   }
+  cartList.replaceChildren(...lines.map(({ item, qty }) =>
+    el("div", { class: "cart-line" },
+      el("div", { class: "cart-line-info" },
+        el("span", { class: "cart-line-name" }, item.name),
+        el("span", { class: "cart-line-price" }, naira(item.price * qty)),
+      ),
+      stepper(item, qty),
+    ),
+  ))
+}
 
-  let total = 0
-  items.forEach(([id, item]) => {
-    total += item.price * item.qty
-    const el = document.createElement("div")
-    el.className = "cart-item"
-    el.innerHTML = `
-      <div class="cart-item-top">
-        <span class="cart-item-name">${item.name}</span>
-        <span class="cart-item-subtotal">₦${item.price * item.qty}</span>
-      </div>
-      <div class="cart-item-controls">
-        <button class="qty-btn" data-id="${id}" data-action="dec">−</button>
-        <span class="qty-label">${item.qty}</span>
-        <button class="qty-btn" data-id="${id}" data-action="inc">+</button>
-        <button class="remove-btn" data-id="${id}" data-action="remove">Remove</button>
-      </div>
-    `
-    cartList.appendChild(el)
-  })
+checkoutBtn.addEventListener("click", checkout)
 
-  cartTotal.textContent = `Total: ₦${total}`
-  showMainButton(total)
-
-  cartList.querySelectorAll("[data-action]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const id = btn.dataset.id
-      const action = btn.dataset.action
-      if (action === "inc") cart[id].qty += 1
-      if (action === "dec") {
-        cart[id].qty -= 1
-        if (cart[id].qty <= 0) delete cart[id]
-      }
-      if (action === "remove") delete cart[id]
-      updateCartFab()
-      renderCart()
+async function checkout() {
+  if (submitting || !cart.size) return
+  if (!tg?.initData) {
+    cartError.textContent = "Open this menu from the store's Telegram bot to place an order."
+    return
+  }
+  submitting = true
+  checkoutBtn.disabled = true
+  checkoutBtn.textContent = "Sending…"
+  cartError.textContent = ""
+  try {
+    const res = await fetch(`${API_BASE}/webapp/cart`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        vendorId,
+        initData: tg.initData,
+        items: [...cart.values()].map(({ item, qty }) => ({ itemId: item.id, qty })),
+      }),
     })
-  })
-}
-
-// ── Telegram Main Button ─────────────────────────────────
-function showMainButton(total) {
-  if (!tg) return
-  tg.MainButton.text = `Checkout  ₦${total}`
-  tg.MainButton.show()
-  tg.MainButton.onClick(handleCheckout)
-}
-
-function hideMainButton() {
-  if (!tg) return
-  tg.MainButton.hide()
-}
-
-function handleCheckout() {
-  const items = Object.entries(cart).map(([id, item]) => ({
-    itemId: id,
-    name: item.name,
-    price: item.price,
-    qty: item.qty,
-  }))
-  if (tg) {
-    tg.sendData(JSON.stringify({ action: "checkout", items }))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || "Could not send your order, please try again.")
+    haptic("medium")
+    // The bot has sent the cart to the chat, where checkout continues.
+    tg.close()
+  } catch (err) {
+    cartError.textContent = err.message
+    // Stock may have changed; reload it so the menu shows what's left.
+    loadMenu()
+  } finally {
+    submitting = false
+    checkoutBtn.disabled = !cart.size
+    checkoutBtn.textContent = "Continue to checkout"
   }
 }
 
-// ── Init ─────────────────────────────────────────────────
 loadMenu()

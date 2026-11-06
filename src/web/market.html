@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Zazu Marketplace</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="css/index.css" />
+</head>
+<body>
+
+<header class="store-header">
+  <div class="store-heading">
+    <h1>Zazu Marketplace</h1>
+    <p class="store-meta">Order from stores near you</p>
+  </div>
+</header>
+
+<main class="view active">
+  <input id="vendor-search" class="search" type="search" placeholder="Search stores" autocomplete="off" />
+  <div id="vendor-list" class="vendor-list">
+    <p class="status-msg">Loading stores…</p>
+  </div>
+</main>
+
+<script src="js/market.js"></script>
+</body>
+</html>

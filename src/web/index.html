@@ -2,39 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Store</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Menu</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="css/index.css" />
 </head>
 <body>
 
-<header>
-  <button id="back-btn">‹</button>
-  <h1 id="header-title">Menu</h1>
+<header class="store-header">
+  <button id="back-btn" aria-label="Back to menu">‹</button>
+  <div class="store-heading">
+    <h1 id="store-name">Menu</h1>
+    <p id="store-meta" class="store-meta"></p>
+  </div>
 </header>
 
-<!-- View: Categories -->
-<div id="view-categories" class="view active">
-  <div class="category-grid" id="category-list">
-    <p class="loading">Loading menu...</p>
+<!-- View: Menu -->
+<main id="view-menu" class="view active">
+  <input id="menu-search" class="search" type="search" placeholder="Search the menu" autocomplete="off" />
+  <nav id="category-chips" class="chips" aria-label="Categories"></nav>
+  <div id="menu-list" class="menu-list">
+    <p class="status-msg">Loading menu…</p>
   </div>
-</div>
-
-<!-- View: Items in category -->
-<div id="view-items" class="view">
-  <div class="item-list" id="item-list"></div>
-</div>
+</main>
 
 <!-- View: Cart -->
-<div id="view-cart" class="view">
-  <div class="cart-list" id="cart-list"></div>
-  <p class="cart-total" id="cart-total"></p>
-</div>
+<section id="view-cart" class="view" aria-label="Your order">
+  <div id="cart-list" class="cart-list"></div>
+  <div class="cart-summary">
+    <span>Total</span>
+    <strong id="cart-total">₦0</strong>
+  </div>
+  <p class="cart-note">You'll choose delivery and pay in the chat after this.</p>
+  <p id="cart-error" class="cart-error" role="alert"></p>
+  <button id="checkout-btn" class="primary-btn">Continue to checkout</button>
+</section>
 
 <!-- Cart floating button -->
-<button id="cart-fab">
-  🛒 Cart <span id="cart-fab-count">0</span>
+<button id="cart-fab" aria-label="View cart">
+  <span>🛒 View order</span>
+  <span id="cart-fab-count" class="badge">0</span>
+  <span id="cart-fab-total"></span>
 </button>
 
 <script src="js/index.js"></script>
