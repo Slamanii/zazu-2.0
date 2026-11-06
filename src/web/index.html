@@ -15,12 +15,16 @@
     <h1 id="store-name">Menu</h1>
     <p id="store-meta" class="store-meta"></p>
   </div>
+  <button id="header-cart" class="header-cart" aria-label="View cart">
+    <span aria-hidden="true">🛒</span>
+    <span id="header-cart-count" class="header-cart-count">0</span>
+  </button>
 </header>
 
 <!-- View: Menu -->
 <main id="view-menu" class="view active">
   <input id="menu-search" class="search" type="search" placeholder="Search the menu" autocomplete="off" />
-  <nav id="category-chips" class="chips" aria-label="Categories"></nav>
+  <nav id="category-chips" class="chips" role="tablist" aria-label="Categories"></nav>
   <div id="menu-list" class="menu-list">
     <p class="status-msg">Loading menu…</p>
   </div>

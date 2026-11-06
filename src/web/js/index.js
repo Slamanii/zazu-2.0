@@ -33,6 +33,15 @@ const checkoutBtn = $("checkout-btn")
 const cartFab = $("cart-fab")
 const cartFabCount = $("cart-fab-count")
 const cartFabTotal = $("cart-fab-total")
+const headerCart = $("header-cart")
+const headerCartCount = $("header-cart-count")
+
+// The category tabs stick just under the header, whose height depends on the store's name.
+const header = document.querySelector(".store-header")
+function syncHeaderHeight() {
+  document.documentElement.style.setProperty("--header-h", `${header.offsetHeight}px`)
+}
+window.addEventListener("resize", syncHeaderHeight)
 
 // Builds an element. Text always goes in as text, never as HTML: names come from vendors.
 function el(tag, attrs = {}, ...children) {
@@ -73,6 +82,7 @@ function showView(name) {
 backBtn.addEventListener("click", () => showView("menu"))
 tg?.BackButton.onClick(() => showView("menu"))
 cartFab.addEventListener("click", () => showView("cart"))
+headerCart.addEventListener("click", () => showView("cart"))
 
 // ── Load ────────────────────────────────────────────────
 async function loadMenu() {
@@ -86,6 +96,7 @@ async function loadMenu() {
     const data = await res.json()
     categories = data.categories
     renderHeader(data.vendor)
+    syncHeaderHeight()
     renderChips()
     renderMenu()
   } catch {
@@ -104,39 +115,53 @@ function renderHeader(vendor) {
 }
 
 // ── Menu ────────────────────────────────────────────────
+// One category at a time: the tabs switch between them. A search looks across all of them.
+let activeTab = null
+
 function renderChips() {
-  chips.replaceChildren(...categories.map((cat) =>
-    el("button", {
-      class: "chip",
-      onclick: () => document.getElementById(`cat-${cat.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    }, cat.name),
-  ))
+  if (!categories.some((c) => c.id === activeTab)) activeTab = categories[0]?.id ?? null
+  const searching = search.value.trim() !== ""
+  chips.replaceChildren(...categories.map((cat) => {
+    const active = !searching && cat.id === activeTab
+    return el("button", {
+      class: `chip${active ? " active" : ""}`,
+      role: "tab",
+      "aria-selected": active ? "true" : "false",
+      onclick: (e) => {
+        activeTab = cat.id
+        if (searching) search.value = ""
+        haptic()
+        renderChips()
+        renderMenu()
+        e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" })
+        window.scrollTo(0, 0)
+      },
+    }, cat.name)
+  }))
   chips.style.display = categories.length > 1 ? "" : "none"
 }
 
 function renderMenu() {
-  const term = search.value.trim().toLowerCase()
-  const sections = categories
-    .map((cat) => ({ ...cat, items: cat.items.filter((i) => !term || i.name.toLowerCase().includes(term)) }))
-    .filter((cat) => cat.items.length)
-
   if (!categories.length) return statusMessage("This store hasn't added anything to its menu yet.")
-  if (!sections.length) return statusMessage(`Nothing matches “${search.value.trim()}”.`)
+  const term = search.value.trim().toLowerCase()
+  const items = term
+    ? categories.flatMap((cat) => cat.items).filter((i) => i.name.toLowerCase().includes(term))
+    : categories.find((cat) => cat.id === activeTab)?.items ?? []
 
-  menuList.replaceChildren(...sections.map((cat) =>
-    el("section", { class: "menu-section", id: `cat-${cat.id}` },
-      el("h2", {}, cat.name),
-      cat.items.map(itemCard),
-    ),
-  ))
+  if (!items.length) {
+    return statusMessage(term ? `Nothing matches “${search.value.trim()}”.` : "Nothing in this category yet.")
+  }
+  menuList.replaceChildren(el("div", { class: "item-grid", role: "tabpanel" }, items.map(itemCard)))
 }
 
 function itemCard(item) {
   const inStock = item.stock > 0
   const qty = cart.get(item.id)?.qty ?? 0
+  // No photo, or one that fails to load: the item's first letter stands in.
+  const placeholder = () => el("div", { class: "item-photo placeholder", "aria-hidden": "true" }, (item.name.trim()[0] || "?").toUpperCase())
   const photo = item.image_url
-    ? el("img", { class: "item-photo", src: item.image_url, alt: "", loading: "lazy", onerror: (e) => e.target.remove() })
-    : null
+    ? el("img", { class: "item-photo", src: item.image_url, alt: "", loading: "lazy", onerror: (e) => e.target.replaceWith(placeholder()) })
+    : placeholder()
   const control = !inStock
     ? el("span", { class: "sold-out" }, "Sold out")
     : qty === 0
@@ -150,7 +175,7 @@ function itemCard(item) {
       el("p", { class: "item-price" }, naira(item.price)),
       inStock && item.stock <= 5 ? el("p", { class: "item-stock" }, `Only ${item.stock} left`) : null,
     ),
-    control,
+    el("div", { class: "item-action" }, control),
   )
 }
 
@@ -167,7 +192,7 @@ function stepper(item, qty) {
   )
 }
 
-search.addEventListener("input", renderMenu)
+search.addEventListener("input", () => { renderChips(); renderMenu() })
 
 // ── Cart ────────────────────────────────────────────────
 function changeQty(item, delta) {
@@ -199,6 +224,10 @@ function updateCartFab() {
   cartFabCount.textContent = count
   cartFabTotal.textContent = naira(total)
   cartFab.classList.toggle("visible", onMenu && count > 0)
+  // The header cart sits top right on the menu; in the cart, back takes its place.
+  headerCart.style.display = onMenu ? "" : "none"
+  headerCartCount.textContent = count
+  headerCartCount.classList.toggle("empty", count === 0)
 }
 
 function renderCart() {
