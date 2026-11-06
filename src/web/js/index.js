@@ -33,6 +33,8 @@ const checkoutBtn = $("checkout-btn")
 const cartFab = $("cart-fab")
 const cartFabCount = $("cart-fab-count")
 const cartFabTotal = $("cart-fab-total")
+const headerCart = $("header-cart")
+const headerCartCount = $("header-cart-count")
 
 // Builds an element. Text always goes in as text, never as HTML: names come from vendors.
 function el(tag, attrs = {}, ...children) {
@@ -73,6 +75,7 @@ function showView(name) {
 backBtn.addEventListener("click", () => showView("menu"))
 tg?.BackButton.onClick(() => showView("menu"))
 cartFab.addEventListener("click", () => showView("cart"))
+headerCart.addEventListener("click", () => showView("cart"))
 
 // ── Load ────────────────────────────────────────────────
 async function loadMenu() {
@@ -199,6 +202,10 @@ function updateCartFab() {
   cartFabCount.textContent = count
   cartFabTotal.textContent = naira(total)
   cartFab.classList.toggle("visible", onMenu && count > 0)
+  // The header cart sits top left on the menu; in the cart, back takes its place.
+  headerCart.style.display = onMenu ? "" : "none"
+  headerCartCount.textContent = count
+  headerCartCount.classList.toggle("empty", count === 0)
 }
 
 function renderCart() {
