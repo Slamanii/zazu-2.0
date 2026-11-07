@@ -4,7 +4,7 @@ import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { supabase } from "../db/supabase";
 import { getCategoriesWithItems, getVendorAverageRating, upsertCart } from "../db/queries";
-import { getVendorBotEntry } from "../telegram/registry";
+import { getVendorBotEntry, listVendorBots } from "../telegram/registry";
 import { sendCartSummary } from "../telegram/handlers";
 import { CartItem } from "../types";
 
@@ -38,23 +38,6 @@ export function verifyInitData(initData: string, botToken: string, nowSecs = Dat
   } catch {
     return null;
   }
-}
-
-// Vendors with an active bot, which is what both the marketplace and a menu may show.
-async function activeVendorBots(): Promise<{ vendor_id: number; bot_username: string | null; bot_link: string | null }[]> {
-  const { data, error } = await supabase
-    .from("telegram_bots")
-    .select("vendor_id, bot_username, bot_link, bot_id")
-    .eq("is_active", true)
-    .not("vendor_id", "is", null);
-  if (error) throw error;
-  return (data ?? []).filter((row) => String(row.bot_id) !== process.env.ZAZU_MAIN_BOT_ID);
-}
-
-function botLink(row: { bot_username: string | null; bot_link: string | null }): string | null {
-  if (row.bot_link && /^https:\/\/t\.me\/[A-Za-z0-9_]+$/.test(row.bot_link)) return row.bot_link;
-  const username = (row.bot_username ?? "").replace(/^@/, "");
-  return /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) ? `https://t.me/${username}` : null;
 }
 
 // Lagos time, where the vendors are. open_time / close_time are "HH:MM:SS"; a close time before
@@ -178,12 +161,8 @@ router.post("/webapp/cart", async (req, res) => {
 router.get("/webapp/vendors", async (req, res) => {
   const term = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 50) : "";
   try {
-    const bots = await activeVendorBots();
-    const linkByVendor = new Map<number, string>();
-    for (const row of bots) {
-      const link = botLink(row);
-      if (link && !linkByVendor.has(row.vendor_id)) linkByVendor.set(row.vendor_id, link);
-    }
+    // Linked by each running bot's real Telegram username.
+    const linkByVendor = new Map(listVendorBots().map((b) => [b.vendorId, `https://t.me/${b.username}`]));
     if (!linkByVendor.size) return res.json({ vendors: [] });
 
     let query = supabase

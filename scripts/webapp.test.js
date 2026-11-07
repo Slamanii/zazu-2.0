@@ -36,7 +36,11 @@ mock("../dist/src/db/queries", {
   async upsertCart(...a) { calls.carts.push(a); },
 });
 const bot = {};
-mock("../dist/src/telegram/registry", { getVendorBotEntry: (id) => (id === 9 ? { bot, token: TOKEN } : null) });
+mock("../dist/src/telegram/registry", {
+  getVendorBotEntry: (id) => (id === 9 ? { bot, token: TOKEN } : null),
+  // Running vendor bots with their real Telegram usernames. Vendor 7 has a bot but is deleted.
+  listVendorBots: () => [{ vendorId: 9, username: "MamaPutBot" }, { vendorId: 7, username: "ClosedBot" }],
+});
 mock("../dist/src/telegram/handlers", { async sendCartSummary(...a) { calls.summaries.push(a); } });
 
 const webapp = require("../dist/src/api/webapp");

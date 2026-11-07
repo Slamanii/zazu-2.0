@@ -8,7 +8,9 @@ type ManagedBot = {
   id: number; bot_id: number | string | null; bot_token: string;
   vendor_id: number | null; is_active: boolean;
 };
-type RunningBot = { bot: TelegramBot; token: string; vendorId: number | null };
+// username is the bot's real Telegram @username from getMe: the telegram_bots columns may hold a
+// display name instead, so links to a bot are built from this.
+type RunningBot = { bot: TelegramBot; token: string; vendorId: number | null; username: string | null; main: boolean };
 const running = new Map<number, RunningBot>();
 let timer: ReturnType<typeof setInterval> | undefined;
 let refreshing = false;
@@ -32,9 +34,22 @@ export function getVendorBotEntry(vendorId: number): { bot: TelegramBot; token: 
 
 export function getMainBotEntry(): { bot: TelegramBot; token: string } | null {
   for (const entry of running.values()) {
-    if (entry.vendorId == null) return { bot: entry.bot, token: entry.token };
+    if (entry.main) return { bot: entry.bot, token: entry.token };
   }
   return null;
+}
+
+// The running vendor bots (not Zazu main), each with its real Telegram username: what the
+// marketplace and /search link to. Only bots that are running are listed, so every link works.
+export function listVendorBots(): { vendorId: number; username: string }[] {
+  const seen = new Set<number>();
+  const bots: { vendorId: number; username: string }[] = [];
+  for (const entry of running.values()) {
+    if (entry.main || entry.vendorId == null || !entry.username || seen.has(entry.vendorId)) continue;
+    seen.add(entry.vendorId);
+    bots.push({ vendorId: entry.vendorId, username: entry.username });
+  }
+  return bots;
 }
 
 async function setMenuButton(bot: TelegramBot, vendorId: number | null) {
@@ -117,7 +132,7 @@ export async function refreshBots() {
         await setMenuButton(bot, isMain(row) ? null : Number(row.vendor_id)).catch(() =>
           console.error(`[bots] Could not set the menu button for managed bot ${row.id}; the bot still runs`));
         if (stopping) { bot.removeAllListeners(); break; }
-        running.set(row.id, { bot, token: row.bot_token, vendorId: row.vendor_id });
+        running.set(row.id, { bot, token: row.bot_token, vendorId: row.vendor_id, username: me.username ?? null, main: isMain(row) });
         void bot.startPolling().catch(() => console.error(`[bots] Bot ${row.id} polling stopped`));
         console.log(`[bots] Started @${me.username} (managed bot ${row.id}, vendor ${row.vendor_id ?? "main"})`);
       } catch (err: any) {
