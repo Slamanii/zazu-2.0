@@ -28,7 +28,7 @@ import {
   saveDispatchRequest,
   getVendorPayout,
   updateCartMessageId,
-  insertFakeDriversNear,
+  ensureFakeDriversNear,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
 import { sendLocationToZazuMain } from "./zazu_main_client";
@@ -478,20 +478,16 @@ export async function handleCheckout(
       { headers: INTERNAL_HEADERS },
     ).catch(() => null);
 
-  let preflightRes = await runPreflight();
-
-  if (!preflightRes?.data?.can_serve && DEV_MODE) {
-    await bot.sendMessage(
-      chatId,
-      "🛠️ Still in development mode — using fake drivers near you for testing.",
-    );
-    await insertFakeDriversNear(
-      vendor.lat,
-      vendor.lng,
-      rideType === "ASAP" ? "EV" : "Bike",
-    );
-    preflightRes = await runPreflight();
+  // Test mode: put fake drivers of the right vehicle beside the pickup (the vendor) before
+  // the rider check, so every order can be tested end to end. The backend matches
+  // ASAP to Bike drivers and ASAPEXPRESS to EV drivers, within 5 km of the pickup.
+  if (DEV_MODE) {
+    await ensureFakeDriversNear(vendor.lat, vendor.lng, rideType === "ASAP" ? "Bike" : "EV")
+      .then(() => bot.sendMessage(chatId, "🛠️ Test mode: placed fake riders near the store."))
+      .catch((err) => console.error("[dev] Could not place fake drivers:", err.message));
   }
+
+  const preflightRes = await runPreflight();
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
 
