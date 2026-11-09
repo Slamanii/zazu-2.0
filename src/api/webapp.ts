@@ -3,9 +3,9 @@
 import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { supabase } from "../db/supabase";
-import { getCategoriesWithItems, getVendorAverageRating, upsertCart } from "../db/queries";
+import { getCart, getCategoriesWithItems, getVendorAverageRating, upsertCart } from "../db/queries";
 import { getVendorBotEntry, listVendorBots } from "../telegram/registry";
-import { sendCartSummary } from "../telegram/handlers";
+import { editCartSummary, sendCartSummary } from "../telegram/handlers";
 import { CartItem } from "../types";
 
 const router = Router();
@@ -98,60 +98,103 @@ router.get("/webapp/vendor", async (req, res) => {
   }
 });
 
-// The web menu's checkout: puts the chosen items in the customer's cart and sends the cart to
-// them in the chat, where the bot's usual checkout (location, rider search, payment) continues.
-// Prices and stock come from the database; the page only says which items and how many.
+// ---------- The customer's cart ----------
+// The web menu and the chat share one cart: the customer's active telegram_cart row in Supabase.
+// The page loads it when it opens, saves every change, and polls it, so a change made in the
+// chat shows up in the menu and the other way round. Every call is checked against Telegram's
+// signature with the vendor bot's token; the user id comes from that signature, never the body.
 const MAX_LINES = 50;
 const MAX_QTY = 99;
 
-router.post("/webapp/cart", async (req, res) => {
-  const { vendorId: rawVendorId, initData, items } = req.body ?? {};
-  const vendorId = Number(rawVendorId);
-  if (!Number.isSafeInteger(vendorId) || vendorId <= 0 || typeof initData !== "string" || !Array.isArray(items)) {
-    return res.status(400).json({ error: "vendorId, initData and items are required" });
-  }
+type Viewer = { vendorId: number; bot: import("node-telegram-bot-api"); userId: number };
 
+function viewer(body: any): Viewer | { status: number; error: string } {
+  const vendorId = Number(body?.vendorId);
+  if (!Number.isSafeInteger(vendorId) || vendorId <= 0 || typeof body?.initData !== "string") {
+    return { status: 400, error: "vendorId and initData are required" };
+  }
   const entry = getVendorBotEntry(vendorId);
-  if (!entry) return res.status(503).json({ error: "This vendor's bot is not running right now" });
-  const user = verifyInitData(initData, entry.token);
-  if (!user) return res.status(401).json({ error: "Please reopen the menu from the bot" });
+  if (!entry) return { status: 503, error: "This vendor's bot is not running right now" };
+  const user = verifyInitData(body.initData, entry.token);
+  if (!user) return { status: 401, error: "Please reopen the menu from the bot" };
+  return { vendorId, bot: entry.bot, userId: user.id };
+}
 
-  if (items.length === 0 || items.length > MAX_LINES) {
-    return res.status(400).json({ error: "Your cart is empty" });
-  }
+// Prices and stock come from the database; the page only says which items and how many.
+async function priceCart(vendorId: number, items: unknown): Promise<{ cart: CartItem[]; total: number } | { status: number; error: string }> {
+  if (!Array.isArray(items) || items.length > MAX_LINES) return { status: 400, error: "Invalid cart" };
   const wanted = new Map<number, number>();
   for (const line of items) {
-    const itemId = Number(line?.itemId);
-    const qty = Number(line?.qty);
+    const itemId = Number((line as any)?.itemId);
+    const qty = Number((line as any)?.qty);
     if (!Number.isSafeInteger(itemId) || !Number.isSafeInteger(qty) || qty < 1 || qty > MAX_QTY) {
-      return res.status(400).json({ error: "Invalid item or quantity" });
+      return { status: 400, error: "Invalid item or quantity" };
     }
     wanted.set(itemId, (wanted.get(itemId) ?? 0) + qty);
   }
-
-  try {
-    const menu = (await getCategoriesWithItems(vendorId)).flatMap((c) => c.item);
-    const cart: CartItem[] = [];
-    for (const [itemId, qty] of wanted) {
-      const item = menu.find((i) => i.id === itemId);
-      if (!item) return res.status(409).json({ error: "An item in your cart is no longer on the menu" });
-      if (qty > item.stock) {
-        return res.status(409).json({
-          error: item.stock > 0 ? `Only ${item.stock} ${item.name} left` : `${item.name} is out of stock`,
-        });
-      }
-      cart.push({ itemId: item.id, name: item.name, price: item.price, qty });
+  const menu = (await getCategoriesWithItems(vendorId)).flatMap((c) => c.item);
+  const cart: CartItem[] = [];
+  for (const [itemId, qty] of wanted) {
+    const item = menu.find((i) => i.id === itemId);
+    if (!item) return { status: 409, error: "An item in your cart is no longer on the menu" };
+    if (qty > item.stock) {
+      return { status: 409, error: item.stock > 0 ? `Only ${item.stock} ${item.name} left` : `${item.name} is out of stock` };
     }
-    const total = cart.reduce((sum, i) => sum + i.price * i.qty, 0);
+    cart.push({ itemId: item.id, name: item.name, price: item.price, qty });
+  }
+  return { cart, total: cart.reduce((sum, i) => sum + i.price * i.qty, 0) };
+}
 
-    // Replaces the cart: the page shows the whole order the customer chose.
-    await upsertCart(user.id, vendorId, cart, total);
+const asLines = (items: CartItem[]) => items.map((i) => ({ itemId: i.itemId, qty: i.qty }));
+
+// The customer's current cart, as the chat sees it.
+router.post("/webapp/cart/state", async (req, res) => {
+  const who = viewer(req.body);
+  if ("error" in who) return res.status(who.status).json({ error: who.error });
+  try {
+    const current = await getCart(who.userId, who.vendorId);
+    res.json({ items: asLines(current?.items ?? []), total: current?.total ?? 0 });
+  } catch (err: any) {
+    console.error(`[webapp] cart state for vendor ${who.vendorId}, user ${who.userId}: ${err.message}`);
+    res.status(500).json({ error: "Could not load your cart" });
+  }
+});
+
+// Saves the whole cart after each change in the menu, and quietly updates the cart message
+// already in the chat. An empty list empties the cart.
+router.post("/webapp/cart/sync", async (req, res) => {
+  const who = viewer(req.body);
+  if ("error" in who) return res.status(who.status).json({ error: who.error });
+  try {
+    const priced = await priceCart(who.vendorId, req.body?.items);
+    if ("error" in priced) return res.status(priced.status).json({ error: priced.error });
+    await upsertCart(who.userId, who.vendorId, priced.cart, priced.total);
+    await editCartSummary(who.bot, who.userId, who.userId, who.vendorId);
+    res.json({ items: asLines(priced.cart), total: priced.total });
+  } catch (err: any) {
+    console.error(`[webapp] cart sync for vendor ${who.vendorId}, user ${who.userId}: ${err.message}`);
+    res.status(500).json({ error: "Could not save your cart" });
+  }
+});
+
+// The web menu's checkout: saves the cart and sends it to the chat, where the bot's usual
+// checkout (location, rider search, payment) continues.
+router.post("/webapp/cart", async (req, res) => {
+  const who = viewer(req.body);
+  if ("error" in who) return res.status(who.status).json({ error: who.error });
+  if (!Array.isArray(req.body?.items) || req.body.items.length === 0) {
+    return res.status(400).json({ error: "Your cart is empty" });
+  }
+  try {
+    const priced = await priceCart(who.vendorId, req.body.items);
+    if ("error" in priced) return res.status(priced.status).json({ error: priced.error });
+    await upsertCart(who.userId, who.vendorId, priced.cart, priced.total);
     // A private chat's id is the user's id. A Mini App opened in that chat means the user has
     // started the bot, so it may message them.
-    await sendCartSummary(entry.bot, user.id, user.id, vendorId);
-    res.json({ ok: true, total });
+    await sendCartSummary(who.bot, who.userId, who.userId, who.vendorId);
+    res.json({ ok: true, total: priced.total });
   } catch (err: any) {
-    console.error(`[webapp] cart for vendor ${vendorId}, user ${user.id}: ${err.message}`);
+    console.error(`[webapp] cart for vendor ${who.vendorId}, user ${who.userId}: ${err.message}`);
     res.status(500).json({ error: "Could not save your cart, please try again" });
   }
 });

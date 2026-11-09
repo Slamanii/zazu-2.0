@@ -7,7 +7,8 @@ const { createHmac } = require("node:crypto");
 function mock(path, exports) { require.cache[require.resolve(path)] = { exports }; }
 
 const TOKEN = "123456:secret-token";
-const calls = { carts: [], summaries: [] };
+const calls = { carts: [], summaries: [], edits: [] };
+let stored = null; // the customer's cart row, as getCart returns it
 const menu = [{ id: 1, name: "Mains", item: [
   { id: 10, name: "Jollof", price: 2500, stock: 3, image_url: null },
   { id: 11, name: "Suya", price: 1500, stock: 0, image_url: null },
@@ -33,7 +34,8 @@ mock("../dist/src/db/supabase", { supabase: { from } });
 mock("../dist/src/db/queries", {
   async getCategoriesWithItems() { return menu; },
   async getVendorAverageRating() { return { average: 4.5, count: 2 }; },
-  async upsertCart(...a) { calls.carts.push(a); },
+  async upsertCart(...a) { calls.carts.push(a); stored = { items: a[2], total: a[3] }; },
+  async getCart() { return stored; },
 });
 const bot = {};
 mock("../dist/src/telegram/registry", {
@@ -41,7 +43,10 @@ mock("../dist/src/telegram/registry", {
   // Running vendor bots with their real Telegram usernames. Vendor 7 has a bot but is deleted.
   listVendorBots: () => [{ vendorId: 9, username: "MamaPutBot" }, { vendorId: 7, username: "ClosedBot" }],
 });
-mock("../dist/src/telegram/handlers", { async sendCartSummary(...a) { calls.summaries.push(a); } });
+mock("../dist/src/telegram/handlers", {
+  async sendCartSummary(...a) { calls.summaries.push(a); },
+  async editCartSummary(...a) { calls.edits.push(a); },
+});
 
 const webapp = require("../dist/src/api/webapp");
 const express = require("express");
@@ -104,6 +109,33 @@ test("cart prices from the database, checks stock, and sends the cart to the cha
   assert.equal(r.status, 200); assert.equal(r.body.total, 5000);
   assert.deepEqual(calls.carts[0], [555, 9, [{ itemId: 10, name: "Jollof", price: 2500, qty: 2 }], 5000]);
   assert.deepEqual(calls.summaries[0], [bot, 555, 555, 9]);
+});
+
+test("the menu and the chat share one cart", async () => {
+  calls.carts = []; calls.summaries = []; calls.edits = []; stored = null;
+  // Nothing saved yet: an empty cart.
+  let r = await call("POST", "/webapp/cart/state", { vendorId: 9, initData: initData() });
+  assert.equal(r.status, 200); assert.deepEqual(r.body.items, []);
+  // A change in the chat (already stored) shows up in the menu.
+  stored = { items: [{ itemId: 10, name: "Jollof", price: 2500, qty: 2 }], total: 5000 };
+  r = await call("POST", "/webapp/cart/state", { vendorId: 9, initData: initData() });
+  assert.deepEqual(r.body.items, [{ itemId: 10, qty: 2 }]);
+  // A change in the menu is saved, priced from the database, and edits the chat's cart message
+  // without sending a new one.
+  r = await call("POST", "/webapp/cart/sync", { vendorId: 9, initData: initData(), items: [{ itemId: 10, qty: 3, price: 1 }] });
+  assert.equal(r.status, 200); assert.equal(r.body.total, 7500);
+  assert.deepEqual(calls.carts.at(-1), [555, 9, [{ itemId: 10, name: "Jollof", price: 2500, qty: 3 }], 7500]);
+  assert.deepEqual(calls.edits.at(-1), [bot, 555, 555, 9]);
+  assert.equal(calls.summaries.length, 0);
+  // Emptying the cart in the menu empties it for the chat too.
+  r = await call("POST", "/webapp/cart/sync", { vendorId: 9, initData: initData(), items: [] });
+  assert.equal(r.status, 200); assert.deepEqual(stored.items, []);
+  // Too many, unsigned, or another bot's signature: refused, nothing saved.
+  const before = calls.carts.length;
+  assert.equal((await call("POST", "/webapp/cart/sync", { vendorId: 9, initData: initData(), items: [{ itemId: 10, qty: 4 }] })).status, 409);
+  assert.equal((await call("POST", "/webapp/cart/state", { vendorId: 9, initData: "user=%7B%22id%22%3A1%7D" })).status, 401);
+  assert.equal((await call("POST", "/webapp/cart/sync", { vendorId: 9, initData: sign({ auth_date: now(), user: '{"id":1}' }, "9:x"), items: [] })).status, 401);
+  assert.equal(calls.carts.length, before);
 });
 
 test("menu and marketplace data", async () => {
