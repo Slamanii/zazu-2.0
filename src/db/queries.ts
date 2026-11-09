@@ -469,35 +469,62 @@ export async function getVendorAverageRating(vendorId: number): Promise<{ averag
 
 // Scatters fake drivers within ~2km of a point so Ride-hailing's
 // preflight check (which requires drivers within 5km) finds enough riders.
-export async function insertFakeDriversNear(
+// Test mode only (DEV_MODE=true): makes sure `count` fake drivers of the given vehicle type are
+// available within ~2 km of a point, so an order there gets past the backend's rider check
+// (it needs 3 available drivers of the ride's vehicle type within 5 km of the pickup).
+// The same fake drivers are moved each time rather than new ones added, so back_drivers
+// doesn't fill up. They are recognisable by their email: fake-rider-…@dev.local.
+const FAKE_DRIVER_EMAIL = /^fake-rider-.+@dev\.local$/;
+
+export async function ensureFakeDriversNear(
   lat: number,
   lng: number,
   vehicleType: "EV" | "Bike",
   count: number = 3,
 ) {
-  const fakeDrivers = Array.from({ length: count }, (_, i) => {
+  const { data: existing, error: readError } = await supabase
+    .from("back_drivers")
+    .select("driver_id, email")
+    .like("email", "fake-rider-%@dev.local")
+    .order("email")
+    .limit(50);
+  if (readError) throw readError;
+  const fakes = (existing ?? []).filter((d) => FAKE_DRIVER_EMAIL.test(d.email ?? ""));
+
+  const spot = () => {
     const angle = Math.random() * 2 * Math.PI;
-    const radiusKm = Math.random() * 2;
-    const dLat = (radiusKm / 111) * Math.cos(angle);
-    const dLng =
-      (radiusKm / (111 * Math.cos((lat * Math.PI) / 180))) * Math.sin(angle);
-
-    const id = crypto.randomUUID();
+    const radiusKm = 0.3 + Math.random() * 1.7;
     return {
-      driver_id: id,
-      driver_pubkey: {},
-      name: `Dev Fake Rider ${i + 1}`,
-      email: `fake-rider-${id}@dev.local`,
-      phone: "0000000000",
-      status: "available",
-      driver_location: { lat: lat + dLat, lng: lng + dLng },
-      vehicle_type: vehicleType,
-      driver_response: {},
+      lat: lat + (radiusKm / 111) * Math.cos(angle),
+      lng: lng + (radiusKm / (111 * Math.cos((lat * Math.PI) / 180))) * Math.sin(angle),
+      name: "Test location",
     };
-  });
+  };
 
-  const { error } = await supabase.from("back_drivers").insert(fakeDrivers);
-  if (error) throw error;
+  for (let i = 0; i < count; i++) {
+    const fields = {
+      status: "available",
+      vehicle_type: vehicleType,
+      driver_location: spot(),
+      name: `Test ${vehicleType === "EV" ? "Express" : "Bike"} Rider ${i + 1}`,
+    };
+    const fake = fakes[i];
+    if (fake) {
+      const { error } = await supabase.from("back_drivers").update(fields).eq("driver_id", fake.driver_id);
+      if (error) throw error;
+    } else {
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from("back_drivers").insert({
+        ...fields,
+        driver_id: id,
+        driver_pubkey: {},
+        email: `fake-rider-${id}@dev.local`,
+        phone: "0000000000",
+        driver_response: {},
+      });
+      if (error) throw error;
+    }
+  }
 }
 
 export async function getPaymentByReference(reference: number) {
