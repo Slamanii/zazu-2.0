@@ -39,6 +39,10 @@ import axios from "axios";
 
 const INTERNAL_HEADERS = { "x-asap-secret": ASAP_WEBHOOK_SECRET };
 
+// The backend's package limits: at most 10 units and 5 kg per delivery.
+const MAX_DELIVERY_UNITS = 10;
+const ITEM_WEIGHT_KG = 0.5;
+
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, i) => sum + i.price * i.qty, 0);
 }
@@ -211,6 +215,26 @@ export async function handleSelectItem(
   });
 }
 
+// The cart message's text and buttons, shared by the chat and the web menu.
+function cartView(items: CartItem[], total: number) {
+  const rows = items.map((c) => ({
+    left: `${c.name} x${c.qty}`,
+    right: `₦${(c.price * c.qty).toLocaleString()}`,
+    item: c,
+  }));
+  const maxLeft = Math.max(...rows.map((r) => r.left.length));
+  const lines = rows.map((r) => `${r.left.padEnd(maxLeft)}  = ${r.right}`).join("\n");
+  const text = `🛒 Cart:\n\n\`\`\`\n${lines}\n\`\`\`\n\nTotal: ₦${total.toLocaleString()}`;
+  const keyboard: any[] = rows.map(({ item: c }) => [
+    { text: c.name, callback_data: "NOOP" },
+    { text: "➖", callback_data: `DECREASE:${c.itemId}` },
+    { text: "➕", callback_data: `INCREASE:${c.itemId}` },
+    { text: "❌ Remove", callback_data: `REMOVE:${c.itemId}` },
+  ]);
+  keyboard.push([{ text: "Checkout", callback_data: "CHECKOUT" }]);
+  return { text, keyboard };
+}
+
 export async function sendCartSummary(
   bot: TelegramBot,
   chatId: number,
@@ -228,33 +252,7 @@ export async function sendCartSummary(
   const rmsg = await bot.sendMessage(chatId, "...", { reply_markup: { remove_keyboard: true } });
   await bot.deleteMessage(chatId, rmsg.message_id).catch(() => {});
 
-  const items = cartData.items;
-  let keyboard: any[] = [];
-
-  const rows = items.map((c) => ({
-    left: `${c.name} x${c.qty}`,
-    right: `₦${(c.price * c.qty).toLocaleString()}`,
-    item: c,
-  }));
-
-  const maxLeft = Math.max(...rows.map((r) => r.left.length));
-  const lines = rows
-    .map((r) => `${r.left.padEnd(maxLeft)}  = ${r.right}`)
-    .join("\n");
-
-  let text = `🛒 Cart:\n\n\`\`\`\n${lines}\n\`\`\``;
-
-  for (const { item: c } of rows) {
-    keyboard.push([
-      { text: c.name, callback_data: "NOOP" },
-      { text: "➖", callback_data: `DECREASE:${c.itemId}` },
-      { text: "➕", callback_data: `INCREASE:${c.itemId}` },
-      { text: "❌ Remove", callback_data: `REMOVE:${c.itemId}` },
-    ]);
-  }
-
-  text += `\n\nTotal: ₦${cartData.total.toLocaleString()}`;
-  keyboard.push([{ text: "Checkout", callback_data: "CHECKOUT" }]);
+  const { text, keyboard } = cartView(cartData.items, cartData.total);
 
   if (cartData.cart_message_id) {
     try {
@@ -276,6 +274,26 @@ export async function sendCartSummary(
   });
 
   await updateCartMessageId(userId, vendorId, sent.message_id);
+}
+
+// Keeps the cart message already in the chat in step with the web menu, quietly: it edits that
+// message and never sends a new one, so changing quantities in the menu doesn't ping the chat.
+export async function editCartSummary(
+  bot: TelegramBot,
+  chatId: number,
+  userId: number,
+  vendorId: number,
+) {
+  const cartData = await getCart(userId, vendorId);
+  if (!cartData?.cart_message_id) return;
+  const options = { chat_id: chatId, message_id: cartData.cart_message_id };
+  if (cartData.items.length === 0) {
+    await bot.editMessageText("Your cart is empty.", { ...options, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
+  const { text, keyboard } = cartView(cartData.items, cartData.total);
+  // Telegram refuses an edit that changes nothing; that's fine here.
+  await bot.editMessageText(text, { ...options, parse_mode: "Markdown", reply_markup: { inline_keyboard: keyboard } }).catch(() => {});
 }
 
 export async function handleAddItemWithQty(
@@ -438,6 +456,16 @@ export async function handleCheckout(
     return;
   }
 
+  // One rider carries at most 10 units (5 kg); say so before the customer pays.
+  const units = cartData.items.reduce((sum, i) => sum + i.qty, 0);
+  if (units > MAX_DELIVERY_UNITS) {
+    await bot.sendMessage(
+      chatId,
+      `One delivery can carry up to ${MAX_DELIVERY_UNITS} items. Your cart has ${units}. Please remove ${units - MAX_DELIVERY_UNITS} and check out again.`,
+    );
+    return;
+  }
+
   const user = await getUserByTelegramId(userId);
 
   if (!user?.default_lat || !user?.default_lng) {
@@ -577,12 +605,16 @@ export async function callASAP(
   const orderData = await getOrderById(Number(orderId));
 
   try {
+    // The backend wants each line's declared value (price x quantity), size in cm and weight
+    // per unit in kg, and refuses a package over 5 kg or 10 units. Menu items carry no size or
+    // weight, so a typical takeaway portion is assumed; checkout caps the cart at 10 units.
     const itemDetails = (cartData?.items ?? []).map((item: CartItem) => ({
       name: item.name,
-      price: item.price,
-      dimensions: [4.0, 4.0, 4.0],
+      price: item.price * item.qty,
+      dimensions: [20.0, 15.0, 10.0],
       quantity: item.qty,
-      weight: 3.0,
+      weight: ITEM_WEIGHT_KG,
+      type: "Food & Groceries",
     }));
 
     const order = orderData[0];

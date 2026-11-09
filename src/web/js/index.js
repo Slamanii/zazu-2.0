@@ -101,7 +101,101 @@ async function loadMenu() {
     renderMenu()
   } catch {
     statusMessage("Could not load the menu. Please check your connection and try again.")
+    return
   }
+  await loadServerCart()
+  startCartPolling()
+}
+
+// ── Shared cart ─────────────────────────────────────────
+// The menu and the chat share one cart, stored in Supabase. The menu loads it on open, saves
+// each change shortly after it is made, and checks for changes made in the chat every few
+// seconds. A local change always wins over an older copy from the server.
+const SAVE_DELAY_MS = 400
+const POLL_MS = 4000
+let localVersion = 0   // bumped on every change made here
+let savedVersion = 0   // the last local version the server has
+let saveTimer = null
+let saving = false
+
+function findItem(id) {
+  for (const cat of categories) {
+    const item = cat.items.find((i) => i.id === id)
+    if (item) return item
+  }
+  return null
+}
+
+const cartLines = () => [...cart.values()].map(({ item, qty }) => ({ itemId: item.id, qty }))
+const sameLines = (a, b) =>
+  a.length === b.length && a.every((l) => b.some((m) => m.itemId === l.itemId && m.qty === l.qty))
+
+// Shows the server's cart. Items no longer on the menu are left out.
+function applyServerCart(lines) {
+  if (sameLines(lines, cartLines())) return
+  cart.clear()
+  for (const { itemId, qty } of lines) {
+    const item = findItem(itemId)
+    if (item) cart.set(item.id, { item, qty })
+  }
+  renderMenu()
+  if (views.cart.classList.contains("active")) renderCart()
+  updateCartFab()
+}
+
+async function cartRequest(path, extra = {}) {
+  if (!tg?.initData) return null // opened outside Telegram: the cart stays on this page
+  const res = await fetch(`${API_BASE}/webapp/cart/${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vendorId, initData: tg.initData, ...extra }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw Object.assign(new Error(body.error || "Could not reach your cart"), { status: res.status })
+  return body
+}
+
+async function loadServerCart() {
+  if (saving || saveTimer || localVersion !== savedVersion) return // a local change is on its way
+  try {
+    const body = await cartRequest("state")
+    if (body && localVersion === savedVersion && !saving && !saveTimer) applyServerCart(body.items)
+  } catch {
+    // Offline for a moment; the next poll tries again.
+  }
+}
+
+function scheduleSave() {
+  localVersion++
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(saveCart, SAVE_DELAY_MS)
+}
+
+async function saveCart() {
+  saveTimer = null
+  if (saving) { saveTimer = setTimeout(saveCart, SAVE_DELAY_MS); return }
+  const version = localVersion
+  saving = true
+  try {
+    const body = await cartRequest("sync", { items: cartLines() })
+    savedVersion = version
+    // Nothing changed here while saving: show exactly what the server stored.
+    if (body && version === localVersion) applyServerCart(body.items)
+  } catch (err) {
+    savedVersion = version
+    cartError.textContent = err.message
+    // Stock or the menu changed: reload both so the page shows what's possible.
+    if (err.status === 409) { await loadMenu() }
+  } finally {
+    saving = false
+  }
+}
+
+let pollTimer = null
+function startCartPolling() {
+  if (pollTimer || !tg?.initData) return
+  pollTimer = setInterval(() => { if (!document.hidden) loadServerCart() }, POLL_MS)
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadServerCart() })
 }
 
 function renderHeader(vendor) {
@@ -206,6 +300,7 @@ function changeQty(item, delta) {
   if (card) card.replaceWith(itemCard(item))
   if (views.cart.classList.contains("active")) renderCart()
   updateCartFab()
+  scheduleSave()
 }
 
 function cartTotals() {
@@ -259,6 +354,9 @@ async function checkout() {
     cartError.textContent = "Open this menu from the store's Telegram bot to place an order."
     return
   }
+  // The checkout below saves the whole cart, so a pending save is no longer needed.
+  clearTimeout(saveTimer)
+  saveTimer = null
   submitting = true
   checkoutBtn.disabled = true
   checkoutBtn.textContent = "Sending…"
@@ -283,6 +381,7 @@ async function checkout() {
     // Stock may have changed; reload it so the menu shows what's left.
     loadMenu()
   } finally {
+    savedVersion = localVersion
     submitting = false
     checkoutBtn.disabled = !cart.size
     checkoutBtn.textContent = "Continue to checkout"
