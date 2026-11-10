@@ -24,7 +24,6 @@ fetch("/pay", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     email,
-    amount,
     order_id: orderId,
     chat_id: chatId,
     user_id: userId,
@@ -36,8 +35,14 @@ fetch("/pay", {
     if (data.access_code) {
       accessCode = data.access_code;
       btn.disabled = false;
+      // The server charges the order's own total, re-priced if the cart or location changed.
+      document.getElementById("amount-text").textContent =
+        `₦${Number(data.amount).toLocaleString()}`;
+      if (data.repriced) {
+        statusEl.textContent = "Your cart or location changed, so the delivery was re-priced.";
+      }
     } else {
-      statusEl.textContent = "Failed to initialise payment.";
+      statusEl.textContent = data.error ?? "Failed to initialise payment.";
     }
   })
   .catch(() => {

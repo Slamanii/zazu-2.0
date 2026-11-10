@@ -23,4 +23,5 @@ Rust-Ride-hailing
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
+*.sw?.env
+*.env

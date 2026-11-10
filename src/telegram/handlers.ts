@@ -12,6 +12,7 @@ function telegramIdToUuid(telegramId: number): string {
   ].join("-");
 }
 import {
+  OrderCheckout,
   insertOrder,
   insertPayment,
   getOrderById,
@@ -29,19 +30,14 @@ import {
   getVendorPayout,
   updateCartMessageId,
   ensureFakeDriversNear,
+  updateOrderBooking,
 } from "../db/queries";
 import TelegramBot, { CallbackQuery } from "node-telegram-bot-api";
-import { sendLocationToZazuMain } from "./zazu_main_client";
-import { ASAP_WEBHOOK_SECRET } from "../env";
-import { INTERNAL_URL, PUBLIC_URL, DEV_MODE } from "../env";
-import { CartItem, CartState } from "../types";
-import axios from "axios";
-
-const INTERNAL_HEADERS = { "x-asap-secret": ASAP_WEBHOOK_SECRET };
-
-// The backend's package limits: at most 10 units and 5 kg per delivery.
-const MAX_DELIVERY_UNITS = 10;
-const ITEM_WEIGHT_KG = 0.5;
+import { sendLocationToZazuMain, zazuId } from "./zazu_main_client";
+import { PUBLIC_URL, DEV_MODE } from "../env";
+import { CartItem } from "../types";
+import { AsapError, SearchStarted, requestRide } from "../api/asap";
+import { DeliveryItem, MAX_DELIVERY_UNITS, deliveryItems, orderCheckout, runPreflight } from "../api/checkout";
 
 function recalcTotal(items: CartItem[]): number {
   return items.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -414,30 +410,23 @@ export async function handlePlaceOrder(
 export async function constructOrder({
   userId,
   vendorId,
-  cart,
-  deliveryPrice,
+  checkout,
 }: {
   userId: number;
   vendorId: number;
-  cart: CartState;
-  deliveryPrice: number;
+  checkout: OrderCheckout;
 }) {
-  const subtotal = cart.items.reduce((sum, i) => sum + i.price * i.qty, 0);
-  const total = subtotal + deliveryPrice;
-
   const order = await insertOrder({
+    ...checkout,
     user_id: userId,
     vendor_id: vendorId,
-    subtotal,
-    delivery_fee: deliveryPrice,
-    total,
     status: "pending",
   });
 
   await insertPayment({
     order_id: order.id,
     paystack_ref: "",
-    amount: total,
+    amount: checkout.total,
     status: "pending",
   });
 
@@ -490,36 +479,28 @@ export async function handleCheckout(
     "🔍 Searching for riders near your location...",
   );
 
-  const rideType = ["ASAP", "ASAPEXPRESS"].includes(vendor.acct_type)
-    ? vendor.acct_type
-    : "ASAPEXPRESS";
+  // The backend picks the ride type (by trip length and which riders are free) and prices the
+  // delivery; the order keeps both, with the token, for the ride request after payment.
+  const pickup = { lat: vendor.lat, lng: vendor.lng };
+  const dropoff = { lat: user.default_lat, lng: user.default_lng };
 
-  const runPreflight = () =>
-    axios.post(
-      `${INTERNAL_URL}/ride-preflight`,
-      {
-        rider_id: telegramIdToUuid(userId),
-        pick_up: { lat: vendor.lat, lng: vendor.lng },
-        drop_off: { lat: user.default_lat, lng: user.default_lng },
-        ride_type: rideType,
-      },
-      { headers: INTERNAL_HEADERS },
-    ).catch(() => null);
-
-  // Test mode: put fake drivers of the right vehicle beside the pickup (the vendor) before
-  // the rider check, so every order can be tested end to end. The backend matches
-  // ASAP to Bike drivers and ASAPEXPRESS to EV drivers, within 5 km of the pickup.
+  // Test mode: put fake drivers beside the pickup (the vendor) before the rider check, so every
+  // order can be tested end to end. With DEV_MODE the backend takes one free driver of either
+  // vehicle and picks the ride type that driver can serve.
   if (DEV_MODE) {
-    await ensureFakeDriversNear(vendor.lat, vendor.lng, rideType === "ASAP" ? "Bike" : "EV")
+    await ensureFakeDriversNear(vendor.lat, vendor.lng, "EV")
       .then(() => bot.sendMessage(chatId, "🛠️ Test mode: placed fake riders near the store."))
       .catch((err) => console.error("[dev] Could not place fake drivers:", err.message));
   }
 
-  const preflightRes = await runPreflight();
+  const quote = await runPreflight(pickup, dropoff, deliveryItems(cartData.items)).catch((err) => {
+    console.error("[checkout] preflight failed:", err.message);
+    return null;
+  });
 
   await bot.deleteMessage(chatId, searchMsg.message_id).catch(() => {});
 
-  if (!preflightRes?.data?.can_serve) {
+  if (!quote?.canServe) {
     await bot.sendMessage(
       chatId,
       "😔 No riders available near you right now.\nPlease try again in a few minutes.",
@@ -532,8 +513,7 @@ export async function handleCheckout(
   const order = await constructOrder({
     userId,
     vendorId,
-    cart: cartData,
-    deliveryPrice: 0,
+    checkout: orderCheckout(cartData.items, pickup, dropoff, quote),
   });
 
   const webAppUrl =
@@ -549,7 +529,7 @@ export async function handleCheckout(
 
   await bot.sendMessage(
     chatId,
-    `Order ready! Total: ₦${order.total}\nTap to pay:`,
+    `Order ready!\nItems: ₦${order.subtotal}\nDelivery: ₦${order.delivery_fee}\nTotal: ₦${order.total}\nTap to pay:`,
     {
       reply_markup: {
         keyboard: [
@@ -587,40 +567,67 @@ export async function handlePayStart(
   await bot.sendMessage(chatId, `Redirecting to payment...\n${deepLink}`);
 }
 
+// After a 409, how long to wait between fresh preflights while no rider is free.
+const PREFLIGHT_RETRY_MS = 60_000;
+
+type Snapshot = {
+  id: number;
+  pickup_point: { lat: number; lng: number };
+  dropoff_point: { lat: number; lng: number };
+  dispatch_items: DeliveryItem[];
+};
+type Book = (rideType: string, preflightToken: string) => Promise<SearchStarted>;
+
+// A fresh preflight for the order's own route and items, then the booking with its token. The
+// fee is already paid, so only the ride type and token change. null: no rider is free right now
+// (or the backend didn't answer the preflight).
+async function bookWithFreshPreflight(order: Snapshot, book: Book): Promise<SearchStarted | null> {
+  const quote = await runPreflight(order.pickup_point, order.dropoff_point, order.dispatch_items).catch((err) => {
+    console.error(`[ride-request] order=${order.id}: preflight failed: ${err.message}`);
+    return null;
+  });
+  if (!quote?.canServe) return null;
+  await updateOrderBooking(order.id, quote.rideType, quote.token!);
+  return book(quote.rideType, quote.token!);
+}
+
+// Runs a fresh preflight every PREFLIGHT_RETRY_MS until a rider is free, then books. Stops if the
+// order stops being paid (cancelled meanwhile). Kept in memory: a restart ends the wait.
+async function bookWhenRidersFree(order: Snapshot, book: Book): Promise<SearchStarted | null> {
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, PREFLIGHT_RETRY_MS));
+    const current = (await getOrderById(order.id))[0];
+    if (current?.status !== "paid") {
+      console.log(`[ride-request] order=${order.id}: now ${current?.status ?? "gone"}; stopped waiting for a rider`);
+      return null;
+    }
+    const started = await bookWithFreshPreflight(order, book);
+    if (started) return started;
+    console.log(`[ride-request] order=${order.id}: still no rider free; next preflight in ${PREFLIGHT_RETRY_MS / 1000}s`);
+  }
+}
+
+// Books the paid order's delivery. Everything the backend checks against the preflight token
+// (rider, pick-up, drop-off, ride type, items) comes from the order as checkout stored it, never
+// from the live cart or location, so it matches what was quoted and paid for.
 export async function callASAP(
   bot: TelegramBot,
   chatId: number,
-  userId: number,
-  riderId: string,
-  dropoffPoint: any,
-  pickupPoint: any,
-  rideType: string,
-  paymentMethod: string,
-  userPhoneNumber: string | undefined,
-  vendorPhoneNumber: string,
   orderId: string,
-  vendorId: number,
+  userPhoneNumber: string | undefined,
 ) {
-  const cartData = await getCart(userId, vendorId);
   const orderData = await getOrderById(Number(orderId));
 
   try {
-    // The backend wants each line's declared value (price x quantity), size in cm and weight
-    // per unit in kg, and refuses a package over 5 kg or 10 units. Menu items carry no size or
-    // weight, so a typical takeaway portion is assumed; checkout caps the cart at 10 units.
-    const itemDetails = (cartData?.items ?? []).map((item: CartItem) => ({
-      name: item.name,
-      price: item.price * item.qty,
-      dimensions: [20.0, 15.0, 10.0],
-      quantity: item.qty,
-      weight: ITEM_WEIGHT_KG,
-      type: "Food & Groceries",
-    }));
-
     const order = orderData[0];
     if (!order?.order_ref) {
       console.error(`[ride-request] order=${orderId} has no order_ref`);
       await bot.sendMessage(chatId, "Could not create ride request 😔");
+      return null;
+    }
+    if (!order.preflight_token || !order.pickup_point || !order.dropoff_point || !order.dispatch_items) {
+      console.error(`[ride-request] order=${orderId} has no preflight snapshot`);
+      await bot.sendMessage(chatId, "Payment received but we could not book the delivery. Please contact support.");
       return null;
     }
     // The backend requires the customer's phone for Zazu orders.
@@ -628,47 +635,60 @@ export async function callASAP(
       await bot.sendMessage(chatId, "Please share your phone number with /start so the driver can reach you, then try again.");
       return null;
     }
-    const vendor = await getVendorPayout(vendorId).catch(() => null);
+    const vendor = await getVendorPayout(order.vendor_id);
 
-    const ride_request_payload = {
-      order_ref: order.order_ref,
-      rider_id: riderId,
-      customer_phone: userPhoneNumber,
-      pick_up: pickupPoint,
-      drop_off: dropoffPoint,
-      ride_type: rideType,
-      payment_method: paymentMethod,
-      items: itemDetails,
-      pickup_name: vendor?.name,
-      pickup_contact_name: vendor?.name,
-      pickup_contact_phone: vendorPhoneNumber,
-      user_id: userId,
-      user_phone_number: userPhoneNumber,
-      vendor_phone_number: vendorPhoneNumber,
+    const book: Book = (rideType, preflightToken) =>
+      requestRide({
+        order_ref: order.order_ref,
+        rider_id: zazuId,
+        preflight_token: preflightToken,
+        customer_phone: userPhoneNumber,
+        pick_up: order.pickup_point,
+        drop_off: order.dropoff_point,
+        ride_type: rideType,
+        payment_method: "cash",
+        items: order.dispatch_items,
+        pickup_name: vendor.name,
+        pickup_contact_name: vendor.name,
+        pickup_contact_phone: vendor.phone,
+        user_id: order.user_id,
+        user_phone_number: userPhoneNumber,
+        vendor_phone_number: vendor.phone,
+      });
+
+    const booked = async (started: SearchStarted) => {
+      console.log(`[ride-request] order=${order.id}: driver search started`, JSON.stringify(started));
+      await saveDispatchRequest(order.id, userPhoneNumber, started.estimated_arrival ?? null).catch((err) =>
+        console.error("Failed to save ride request details:", err.message),
+      );
     };
 
-    const response = await axios.post(
-      `${INTERNAL_URL}/ride-request`,
-      ride_request_payload,
-      { headers: INTERNAL_HEADERS },
-    );
-
-    const rideData = response.data;
-
-    if (!rideData.success) {
-      await bot.sendMessage(chatId, "Could not create ride request 😔");
-      return null;
+    let started: SearchStarted | null;
+    try {
+      started = await book(order.ride_type, order.preflight_token);
+    } catch (err) {
+      // 409: the token expired (24 h) or the backend now answers differently for this request.
+      if (!(err instanceof AsapError) || err.status !== 409) throw err;
+      console.warn(`[ride-request] order=${order.id}: ${err.message}; running the preflight again`);
+      started = await bookWithFreshPreflight(order, book);
     }
 
-    await saveDispatchRequest(order.id, rideType, userPhoneNumber).catch((err) =>
-      console.error("Failed to save ride request details:", err.message),
-    );
+    if (!started) {
+      await bot.sendMessage(chatId, "⏳ All riders near the store are busy. We'll book your delivery as soon as one is free.");
+      void bookWhenRidersFree(order, book)
+        .then((later) => later && booked(later))
+        .catch(async (err) => {
+          console.error(`[ride-request] order=${order.id}: booking after waiting failed: ${err.message}`);
+          await bot.sendMessage(chatId, "We could not book your delivery. Please contact support.").catch(() => {});
+        });
+      return orderComingThrough({}, orderData);
+    }
 
-    return orderComingThrough(rideData, orderData);
+    await booked(started);
+    return orderComingThrough(started, orderData);
   } catch (err: any) {
-    const body = err.response?.data;
-    console.error("Error sending ride request to Zazu-Main:", err.message, JSON.stringify(body, null, 2));
-    await bot.sendMessage(chatId, "Error contacting delivery system 😔");
+    console.error(`[ride-request] order=${orderId}: ${err.message}`);
+    await bot.sendMessage(chatId, "Payment received but we could not book the delivery. Please contact support.");
     return null;
   }
 }

@@ -103,6 +103,21 @@ async function ensureUser(telegramId: number) {
   }
 }
 
+// The Telegram chat of whoever shared this phone number with a bot (telegram_custom_users).
+// Telegram can't message a phone number directly, so this is how a vendor's phone reaches them.
+// Matched on the last 10 digits, so 0803…, 234803… and +234803… are the same number.
+export async function getTelegramIdByPhone(phone: string): Promise<number | null> {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  const { data, error } = await supabase
+    .from("telegram_custom_users")
+    .select("telegram_user_id")
+    .like("phone", `%${digits.slice(-10)}`)
+    .limit(1);
+  if (error) throw error;
+  return data?.[0]?.telegram_user_id ?? null;
+}
+
 export async function upsertUserPhone(telegramId: number, phone: string, name: string) {
   await ensureUser(telegramId);
   const { error } = await supabase
@@ -123,12 +138,22 @@ export async function upsertUserLocation(telegramId: number, lat: number, lng: n
 
 // ---------- Orders ----------
 
-export async function insertOrder(order: {
-  user_id: number;
-  vendor_id: number;
+// What an order's preflight was run for, and what the vendor dashboard shows (items).
+export type OrderCheckout = {
   subtotal: number;
   delivery_fee: number;
   total: number;
+  ride_type: string;
+  preflight_token: string;
+  pickup_point: { lat: number; lng: number };
+  dropoff_point: { lat: number; lng: number };
+  dispatch_items: unknown[];
+  items: { name: string; quantity: number; price: number }[];
+};
+
+export async function insertOrder(order: OrderCheckout & {
+  user_id: number;
+  vendor_id: number;
   status: string;
 }) {
   const { data, error } = await supabase
@@ -148,6 +173,35 @@ export async function getOrderById(orderId: number) {
     .eq("id", orderId);
   if (error || !data) throw new Error("Order not found: " + error?.message);
   return data;
+}
+
+// Re-quotes an unpaid order after a new preflight; its payment row is charged the new total.
+export async function updateOrderCheckout(orderId: number, checkout: OrderCheckout) {
+  const { data, error } = await supabase
+    .from("telegram_orders")
+    .update({ ...checkout, updated_at: new Date().toISOString() })
+    .eq("id", orderId)
+    .eq("status", "pending")
+    .select("*")
+    .single();
+  if (error || !data) throw new Error("Failed to update order: " + error?.message);
+
+  const { error: paymentError } = await supabase
+    .from("telegram_payments")
+    .update({ amount: checkout.total })
+    .eq("order_id", orderId);
+  if (paymentError) throw paymentError;
+  return data;
+}
+
+// A ride request refused for an expired preflight is booked again with a new token. The fee was
+// already paid, so only the token and the ride type the backend now picks change.
+export async function updateOrderBooking(orderId: number, rideType: string, preflightToken: string) {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ ride_type: rideType, preflight_token: preflightToken, updated_at: new Date().toISOString() })
+    .eq("id", orderId);
+  if (error) throw error;
 }
 
 export async function updateOrderStatus(orderId: number, status: string) {
@@ -301,7 +355,7 @@ export async function getOrderContext(orderId: number): Promise<{ telegramId: nu
 const DISPATCH_COLUMNS =
   "id, user_id, vendor_id, status, subtotal, delivery_fee, ride_type, order_ref, " +
   "asap_status, no_driver_retries, driver_id, driver_name, driver_phone, " +
-  "driver_account_number, driver_bank_code, pickup_code, dropoff_code";
+  "driver_account_number, driver_bank_code, pickup_code, dropoff_code, asset_trip";
 
 export type DispatchOrder = {
   id: number;
@@ -321,6 +375,7 @@ export type DispatchOrder = {
   driver_bank_code: string | null;
   pickup_code: string | null;
   dropoff_code: string | null;
+  asset_trip: boolean;
 };
 
 export async function getOrderByRef(orderRef: string): Promise<DispatchOrder | null> {
@@ -386,12 +441,33 @@ export async function saveRideDetails(orderRef: string, details: {
   driver_bank_code: string | null;
   pickup_code: string | null;
   dropoff_code: string | null;
+  asset_trip: boolean;
 }) {
   const now = new Date().toISOString();
   const { error } = await supabase
     .from("telegram_orders")
     .update({ ...details, driver_assigned_at: now, updated_at: now })
     .eq("order_ref", orderRef);
+  if (error) throw error;
+}
+
+// The backend's trip record for the order (back_trips, keyed by Zazu's order_ref): Ongoing from
+// pickup, Completed once the driver enters the drop-off code, or Cancelled. null: no trip yet.
+export async function getTripStatus(orderRef: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("back_trips")
+    .select("status")
+    .eq("order_ref", orderRef)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.status as string | undefined) ?? null;
+}
+
+export async function saveTripStatus(orderId: number, tripStatus: string | null) {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ trip_status: tripStatus })
+    .eq("id", orderId);
   if (error) throw error;
 }
 
@@ -417,10 +493,19 @@ export async function releasePayout(orderId: number, who: "vendor" | "driver") {
   if (error) throw error;
 }
 
-export async function saveDispatchRequest(orderId: number, rideType: string, customerPhone: string) {
+export async function saveDispatchRequest(orderId: number, customerPhone: string, eta: string | null) {
   const { error } = await supabase
     .from("telegram_orders")
-    .update({ ride_type: rideType, customer_phone: customerPhone, no_driver_retries: 0 })
+    .update({ customer_phone: customerPhone, eta, no_driver_retries: 0 })
+    .eq("id", orderId);
+  if (error) throw error;
+}
+
+// A new driver search (after no_driver) answers with a new arrival estimate.
+export async function saveEta(orderId: number, eta: string | null) {
+  const { error } = await supabase
+    .from("telegram_orders")
+    .update({ eta })
     .eq("id", orderId);
   if (error) throw error;
 }
@@ -428,13 +513,14 @@ export async function saveDispatchRequest(orderId: number, rideType: string, cus
 export async function getVendorPayout(vendorId: number) {
   const { data, error } = await supabase
     .from("telegram_vendor")
-    .select("name, user_id, acct_details")
+    .select("id, name, phone, acct_details")
     .eq("id", vendorId)
     .single();
   if (error || !data) throw new Error("Vendor not found");
   return data as {
+    id: number;
     name: string;
-    user_id: number | null;
+    phone: string;
     acct_details: { bank_account_number: string; bank_code: string } | null;
   };
 }

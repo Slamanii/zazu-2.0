@@ -184,34 +184,8 @@ bot.on("message", async (msg) => {
           { reply_markup: { remove_keyboard: true } },
         );
 
-        if (!userDb?.default_lat || !userDb?.default_lng) {
-          await bot.sendMessage(
-            chatId,
-            "Location not found. Please share your location and try again.",
-          );
-          return;
-        }
-
-        const pickupPoint = { lat: vendor.lat, lng: vendor.lng };
-        const dropoffPoint = {
-          lat: userDb.default_lat,
-          lng: userDb.default_lng,
-        };
-
-        const orderPayload = await callASAP(
-          bot,
-          chatId,
-          userId,
-          zazuId,
-          dropoffPoint,
-          pickupPoint,
-          "ASAPEXPRESS",
-          "cash",
-          userDb.phone ?? undefined,
-          vendor.phone,
-          orderId,
-          vendor_info.vendor_id,
-        );
+        // The route, ride type and items are the order's own, as its preflight quoted them.
+        const orderPayload = await callASAP(bot, chatId, orderId, userDb?.phone ?? undefined);
 
         await upsertCart(userId, vendor_info.vendor_id, [], 0, "checked_out");
 
@@ -363,12 +337,7 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
   const param = match?.[1];
   if (!param?.startsWith("paid_")) return;
 
-  const [vendor, userDb] = await Promise.all([
-    getVendorForBot(vendor_info.vendor_id),
-    getUserByTelegramId(userId),
-  ]);
-
-  if (!userDb?.default_lat || !userDb?.default_lng) return;
+  const userDb = await getUserByTelegramId(userId);
 
   const orderId = param.replace("paid_", "");
   const data = await getPaymentStatus(Number(orderId));
@@ -376,26 +345,8 @@ bot.onText(/\/start (.+)/, async (msg, match) => {
   if (data?.status === "success") {
     await bot.sendMessage(chatId, "Payment Confirmed");
 
-    const pickupPoint = { lat: vendor.lat, lng: vendor.lng };
-    const dropoffPoint = {
-      lat: userDb.default_lat,
-      lng: userDb.default_lng,
-    };
-
-    const orderPayload = await callASAP(
-      bot,
-      chatId,
-      userId,
-      zazuId,
-      dropoffPoint,
-      pickupPoint,
-       "ASAPEXPRESS",
-      "cash",
-      userDb.phone ?? undefined,
-      vendor.phone,
-      orderId,
-      vendor_info.vendor_id,
-    );
+    // The route, ride type and items are the order's own, as its preflight quoted them.
+    const orderPayload = await callASAP(bot, chatId, orderId, userDb?.phone ?? undefined);
 
     if (orderPayload) {
       await bot.sendMessage(

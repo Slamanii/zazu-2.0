@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import TelegramBot from "node-telegram-bot-api";
-import { ASAP_WEBHOOK_SECRET, NO_DRIVER_MAX_RETRIES } from "../env";
+import { ASAP_WEBHOOK_SECRET, NO_DRIVER_MAX_RETRIES, zazuCut } from "../env";
 import { getVendorBot } from "../telegram/registry";
 import { sendRatingPrompt } from "../telegram/handlers";
 import {
@@ -9,9 +9,13 @@ import {
   claimPayout,
   countNoDriverRetry,
   getOrderByRef,
+  getTelegramIdByPhone,
+  getTripStatus,
   getVendorPayout,
   releasePayout,
+  saveEta,
   saveRideDetails,
+  saveTripStatus,
 } from "../db/queries";
 import { transferTo } from "./payment/paystackTransfer";
 import { AsapError, assignDriver, preflight, requestRide } from "./asap";
@@ -41,15 +45,17 @@ async function tellCustomer(order: DispatchOrder, text: string) {
   );
 }
 
-// The vendor is the sender: they hand the package and the pickup code to the driver. Only
-// vendors with a Telegram user_id on file can be messaged.
+// The vendor is the sender: they hand the package and the pickup code to the driver. Alongside
+// the dashboard (pickup_code on the order), the vendor is messaged at the Telegram chat that
+// shared the store's phone number with a bot; a vendor who never shared it is not messaged.
 async function tellVendor(order: DispatchOrder, text: string) {
   const vendor = await getVendorPayout(order.vendor_id).catch(() => null);
-  if (!vendor?.user_id) {
-    console.warn(`[dispatch] order=${order.id}: vendor ${order.vendor_id} has no Telegram user_id; not messaged`);
+  const chatId = vendor?.phone ? await getTelegramIdByPhone(vendor.phone).catch(() => null) : null;
+  if (!chatId) {
+    console.warn(`[dispatch] order=${order.id}: no Telegram chat has shared vendor ${order.vendor_id}'s phone; not messaged`);
     return;
   }
-  await botFor(order)?.sendMessage(vendor.user_id, text).catch((err) =>
+  await botFor(order)?.sendMessage(chatId, text).catch((err) =>
     console.error(`[dispatch] order=${order.id}: could not message vendor: ${err.message}`),
   );
 }
@@ -66,9 +72,10 @@ router.post("/ride-preflight", verifyAsapSecret, async (req, res) => {
 });
 
 // Places the order with the backend, once. The answer only says the driver search started;
-// the driver arrives later in /ride-details.
+// the driver arrives later in /ride-details. Passed through as sent: the ride type must be the
+// one the preflight picked, or the backend refuses the request.
 router.post("/ride-request", verifyAsapSecret, async (req, res) => {
-  const payload = { ...req.body, ride_type: "ASAPEXPRESS" };
+  const payload = req.body;
   console.log("Received Ride Request", JSON.stringify(payload, null, 2));
 
   try {
@@ -112,7 +119,9 @@ router.post("/order-status", verifyAsapSecret, async (req, res) => {
         );
       case "delivered":
         await tellCustomer(order, "✅ Your order has been delivered. Enjoy!");
-        await payOut(order);
+        void payOutWhenTripCompleted(order).catch((err) =>
+          console.error(`[payout] order=${order.id}: ${err.message}`),
+        );
         {
           const bot = botFor(order);
           if (bot) {
@@ -147,7 +156,8 @@ async function retryDriverSearch(order: DispatchOrder) {
   }
 
   try {
-    await assignDriver(order.order_ref);
+    const started = await assignDriver(order.order_ref);
+    await saveEta(order.id, started.estimated_arrival ?? null).catch(() => {});
     console.log(`[order-status] order=${order.id}: driver search restarted (retry ${attempt})`);
   } catch (err) {
     const status = err instanceof AsapError ? err.status : undefined;
@@ -157,11 +167,38 @@ async function retryDriverSearch(order: DispatchOrder) {
   }
 }
 
-// Zazu pays the vendor and its own driver once the order is delivered. Each payout is claimed
-// first, so a repeated delivered push never pays twice; a failed transfer releases its claim.
+// The payout waits for the backend's trip to read Completed. It is closed in the same step that
+// marks the order delivered, so it normally already is; if not, it is checked again every
+// TRIP_CHECK_MS, TRIP_CHECK_TRIES times, and then left for support (trip_status shows where).
+const TRIP_CHECK_MS = 60_000;
+const TRIP_CHECK_TRIES = 10;
+
+async function payOutWhenTripCompleted(order: DispatchOrder) {
+  for (let attempt = 1; ; attempt++) {
+    const tripStatus = await getTripStatus(order.order_ref).catch((err) => {
+      console.error(`[payout] order=${order.id}: could not read the trip: ${err.message}`);
+      return null;
+    });
+    await saveTripStatus(order.id, tripStatus).catch((err) =>
+      console.error(`[payout] order=${order.id}: could not save trip_status: ${err.message}`),
+    );
+    if (tripStatus === "Completed") return payOut(order);
+    if (tripStatus === "Cancelled" || attempt >= TRIP_CHECK_TRIES) {
+      console.error(`[payout] order=${order.id}: trip is ${tripStatus ?? "missing"}; not paid out`);
+      return;
+    }
+    console.warn(`[payout] order=${order.id}: trip is ${tripStatus ?? "missing"}; checking again in ${TRIP_CHECK_MS / 1000}s`);
+    await new Promise((resolve) => setTimeout(resolve, TRIP_CHECK_MS));
+  }
+}
+
+// Zazu pays the vendor and its own driver once the trip is completed. The vendor gets the items'
+// subtotal; the driver gets the delivery fee less Zazu's cut for the ride type and vehicle
+// (ZAZU_CUT_* in env). Each payout is claimed first, so a repeated delivered push never pays
+// twice; a failed transfer releases its claim.
 async function payOut(order: DispatchOrder) {
-  const zazuCut = order.ride_type === "ASAPEXPRESS" ? 0.20 : 0.35;
-  const driverAmount = Math.floor(order.delivery_fee * (1 - zazuCut));
+  const cut = zazuCut(order.ride_type, order.asset_trip);
+  const driverAmount = Math.floor(order.delivery_fee * (1 - cut));
   const vendorAmount = order.subtotal;
   const vendor = await getVendorPayout(order.vendor_id);
 
@@ -184,7 +221,10 @@ async function payOut(order: DispatchOrder) {
   }
 
   await Promise.all(payouts);
-  console.log(`[payout] order=${order.id} vendor=₦${vendorAmount} driver=₦${driverAmount}`);
+  console.log(
+    `[payout] order=${order.id} ${order.ride_type}${order.asset_trip ? " (asset)" : ""} ` +
+      `vendor=₦${vendorAmount} driver=₦${driverAmount} zazu_cut=${cut}`,
+  );
 }
 
 async function pay(orderId: number, who: "vendor" | "driver", transfer: () => Promise<void>) {
@@ -202,7 +242,7 @@ async function pay(orderId: number, who: "vendor" | "driver", transfer: () => Pr
 
 // Sent once a driver has taken the order, and again if it is reassigned to another driver.
 router.post("/ride-details", verifyAsapSecret, async (req, res) => {
-  const { order_ref, pick_up, drop_off, driver } = req.body ?? {};
+  const { order_ref, pick_up, drop_off, driver, asset_trip } = req.body ?? {};
   if (typeof order_ref !== "string" || !driver) {
     return res.status(400).json({ error: "order_ref and driver are required" });
   }
@@ -228,6 +268,8 @@ router.post("/ride-details", verifyAsapSecret, async (req, res) => {
       driver_bank_code: driver.bank_code ?? null,
       pickup_code: pick_up?.code ?? null,
       dropoff_code: drop_off?.code ?? null,
+      // The driver is on an investor-funded vehicle: Zazu's cut is ZAZU_CUT_<RIDE_TYPE>_ASSET.
+      asset_trip: asset_trip === true,
     });
 
     // The same driver sent twice (a backend retry) is not news.
