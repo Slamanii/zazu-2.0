@@ -493,19 +493,30 @@ export async function releasePayout(orderId: number, who: "vendor" | "driver") {
   if (error) throw error;
 }
 
-export async function saveDispatchRequest(orderId: number, customerPhone: string, eta: string | null) {
+// The backend's estimated_arrival is a UTC clock time ("HH:MM"); eta is a timestamp. A time more
+// than 12 hours behind now is taken to be after midnight. null when the value isn't a time.
+function etaTimestamp(estimatedArrival: string | null): string | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(estimatedArrival?.trim() ?? "");
+  if (!match) return null;
+  const now = new Date();
+  const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Number(match[1]), Number(match[2])));
+  if (at.getTime() < now.getTime() - 12 * 60 * 60 * 1000) at.setUTCDate(at.getUTCDate() + 1);
+  return at.toISOString();
+}
+
+export async function saveDispatchRequest(orderId: number, customerPhone: string, estimatedArrival: string | null) {
   const { error } = await supabase
     .from("telegram_orders")
-    .update({ customer_phone: customerPhone, eta, no_driver_retries: 0 })
+    .update({ customer_phone: customerPhone, eta: etaTimestamp(estimatedArrival), no_driver_retries: 0 })
     .eq("id", orderId);
   if (error) throw error;
 }
 
 // A new driver search (after no_driver) answers with a new arrival estimate.
-export async function saveEta(orderId: number, eta: string | null) {
+export async function saveEta(orderId: number, estimatedArrival: string | null) {
   const { error } = await supabase
     .from("telegram_orders")
-    .update({ eta })
+    .update({ eta: etaTimestamp(estimatedArrival) })
     .eq("id", orderId);
   if (error) throw error;
 }
