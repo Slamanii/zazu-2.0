@@ -197,7 +197,7 @@ bot.on("message", async (msg) => {
           );
         }
       } catch (err: any) {
-        console.error("Web App payment handler error:", err.message);
+        console.error(`Web App payment handler error (order=${orderId}):`, err.stack ?? err.message);
         await bot.sendMessage(
           chatId,
           "Payment received but could not assign rider. Please contact support.",

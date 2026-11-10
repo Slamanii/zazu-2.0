@@ -616,9 +616,8 @@ export async function callASAP(
   orderId: string,
   userPhoneNumber: string | undefined,
 ) {
-  const orderData = await getOrderById(Number(orderId));
-
   try {
+    const orderData = await getOrderById(Number(orderId));
     const order = orderData[0];
     if (!order?.order_ref) {
       console.error(`[ride-request] order=${orderId} has no order_ref`);
