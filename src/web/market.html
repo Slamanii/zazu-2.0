@@ -18,6 +18,11 @@
 
 <main class="view active">
   <input id="vendor-search" class="search" type="search" placeholder="Search stores" autocomplete="off" />
+  <nav id="market-filters" class="chips" role="tablist" aria-label="Filter stores">
+    <button class="chip active" role="tab" aria-selected="true" data-filter="all">All</button>
+    <button class="chip" role="tab" aria-selected="false" data-filter="open">Open now</button>
+    <button class="chip" role="tab" aria-selected="false" data-filter="closed">Closed</button>
+  </nav>
   <div id="vendor-list" class="vendor-list">
     <p class="status-msg">Loading stores…</p>
   </div>

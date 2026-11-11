@@ -19,7 +19,7 @@ let submitting = false
 
 // ── DOM ─────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id)
-const views = { menu: $("view-menu"), cart: $("view-cart") }
+const views = { menu: $("view-menu"), cart: $("view-cart"), track: $("view-track"), location: $("view-location") }
 const storeName = $("store-name")
 const storeMeta = $("store-meta")
 const backBtn = $("back-btn")
@@ -35,6 +35,14 @@ const cartFabCount = $("cart-fab-count")
 const cartFabTotal = $("cart-fab-total")
 const headerCart = $("header-cart")
 const headerCartCount = $("header-cart-count")
+const headerTrack = $("header-track")
+const headerLocation = $("header-location")
+const trackContent = $("track-content")
+const locationMap = $("location-map")
+const locationCoords = $("location-coords")
+const locationUseTg = $("location-use-tg")
+const locationError = $("location-error")
+const locationSaveBtn = $("location-save-btn")
 
 // The category tabs stick just under the header, whose height depends on the store's name.
 const header = document.querySelector(".store-header")
@@ -72,9 +80,12 @@ function statusMessage(text) {
 function showView(name) {
   for (const [key, view] of Object.entries(views)) view.classList.toggle("active", key === name)
   const inCart = name === "cart"
-  backBtn.style.display = inCart && !tg ? "block" : "none"
-  if (tg) inCart ? tg.BackButton.show() : tg.BackButton.hide()
+  const notMenu = name !== "menu"
+  backBtn.style.display = notMenu && !tg ? "block" : "none"
+  if (tg) notMenu ? tg.BackButton.show() : tg.BackButton.hide()
   if (inCart) renderCart()
+  if (name === "track") loadActiveOrder()
+  if (name === "location") initLocationView()
   updateCartFab()
   window.scrollTo(0, 0)
 }
@@ -83,6 +94,8 @@ backBtn.addEventListener("click", () => showView("menu"))
 tg?.BackButton.onClick(() => showView("menu"))
 cartFab.addEventListener("click", () => showView("cart"))
 headerCart.addEventListener("click", () => showView("cart"))
+headerTrack.addEventListener("click", () => showView("track"))
+headerLocation.addEventListener("click", () => showView("location"))
 
 // ── Load ────────────────────────────────────────────────
 async function loadMenu() {
@@ -105,6 +118,18 @@ async function loadMenu() {
   }
   await loadServerCart()
   startCartPolling()
+  checkForActiveOrder()
+}
+
+async function checkForActiveOrder() {
+  if (!tg?.initData || !vendorId) return
+  try {
+    const res = await fetch(`${API_BASE}/webapp/order/active?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
+    if (res.ok) {
+      const { order } = await res.json()
+      headerTrack.style.display = order ? "" : "none"
+    }
+  } catch {}
 }
 
 // ── Shared cart ─────────────────────────────────────────
@@ -387,5 +412,175 @@ async function checkout() {
     checkoutBtn.textContent = "Continue to checkout"
   }
 }
+
+// ── Order tracking ──────────────────────────────────────
+const TRACK_STEPS = [
+  { key: "pending",    icon: "🛒", label: "Order placed" },
+  { key: "paid",       icon: "💳", label: "Payment confirmed" },
+  { key: "dispatched", icon: "🚴", label: "Rider assigned" },
+  { key: "in_transit", icon: "🛵", label: "On the way" },
+  { key: "delivered",  icon: "✅", label: "Delivered" },
+]
+
+function statusLabel(asapStatus, status) {
+  if (asapStatus === "in_transit") return "in_transit"
+  if (status === "delivered") return "delivered"
+  if (status === "dispatched" || asapStatus) return "dispatched"
+  if (status === "paid") return "paid"
+  return "pending"
+}
+
+async function loadActiveOrder() {
+  if (!tg?.initData) {
+    trackContent.replaceChildren(el("p", { class: "track-no-order" }, "Open this menu from the store's bot to track orders."))
+    return
+  }
+  trackContent.replaceChildren(el("p", { class: "status-msg" }, "Loading your order…"))
+  try {
+    const res = await fetch(`${API_BASE}/webapp/order/active?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
+    if (!res.ok) throw new Error(String(res.status))
+    const { order } = await res.json()
+    if (!order) {
+      trackContent.replaceChildren(el("p", { class: "track-no-order" }, "No active order right now."))
+      headerTrack.style.display = "none"
+      return
+    }
+    headerTrack.style.display = ""
+    const current = statusLabel(order.asap_status, order.status)
+    const stepIdx = TRACK_STEPS.findIndex(s => s.key === current)
+    const steps = TRACK_STEPS.map((s, i) => {
+      const done = i < stepIdx
+      const active = i === stepIdx
+      return el("div", { class: `track-step${done ? " done" : active ? " active" : ""}` },
+        el("span", { class: "track-icon" }, s.icon),
+        el("div", {},
+          el("div", { class: "track-label" }, s.label),
+        ),
+      )
+    })
+    const nodes = [el("div", { class: "track-status" }, steps)]
+
+    if (order.driver_name || order.driver_phone) {
+      nodes.push(el("div", { class: "track-driver" },
+        el("h3", {}, "Your rider"),
+        order.driver_name ? el("p", {}, order.driver_name) : null,
+        order.driver_phone
+          ? el("p", {}, el("a", { href: `tel:${order.driver_phone}` }, order.driver_phone))
+          : null,
+      ))
+    }
+    if (order.dropoff_code) {
+      nodes.push(el("div", { class: "track-driver" },
+        el("h3", {}, "Drop-off code"),
+        el("p", { class: "track-code" }, order.dropoff_code),
+        el("p", {}, "Show this to the rider when your order arrives."),
+      ))
+    }
+    trackContent.replaceChildren(...nodes)
+  } catch {
+    trackContent.replaceChildren(el("p", { class: "status-msg" }, "Could not load order status."))
+  }
+}
+
+// ── Location editor ─────────────────────────────────────
+let pendingLat = null
+let pendingLng = null
+let locationMapInstance = null
+
+async function initLocationView() {
+  locationError.textContent = ""
+  locationSaveBtn.disabled = true
+  pendingLat = null
+  pendingLng = null
+  locationCoords.textContent = ""
+
+  if (tg?.initData) {
+    try {
+      const res = await fetch(`${API_BASE}/webapp/user/location?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.lat && data.lng) {
+          locationCoords.textContent = `Current pin: ${Number(data.lat).toFixed(5)}, ${Number(data.lng).toFixed(5)}`
+        }
+      }
+    } catch {}
+  }
+
+  if (!locationMapInstance) {
+    if (!window.L) {
+      await loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js")
+      const link = document.createElement("link")
+      link.rel = "stylesheet"
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      document.head.appendChild(link)
+    }
+    locationMapInstance = window.L.map("location-map", { zoomControl: true }).setView([6.5244, 3.3792], 13)
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(locationMapInstance)
+    let marker = null
+    locationMapInstance.on("click", (e) => {
+      pendingLat = e.latlng.lat
+      pendingLng = e.latlng.lng
+      locationCoords.textContent = `Pin: ${pendingLat.toFixed(5)}, ${pendingLng.toFixed(5)}`
+      locationSaveBtn.disabled = false
+      if (marker) marker.setLatLng(e.latlng)
+      else marker = window.L.marker(e.latlng).addTo(locationMapInstance)
+      haptic()
+    })
+  }
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script")
+    s.src = src
+    s.onload = resolve
+    s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+locationUseTg.addEventListener("click", () => {
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        pendingLat = pos.coords.latitude
+        pendingLng = pos.coords.longitude
+        locationCoords.textContent = `Pin: ${pendingLat.toFixed(5)}, ${pendingLng.toFixed(5)}`
+        locationSaveBtn.disabled = false
+        if (locationMapInstance) {
+          locationMapInstance.setView([pendingLat, pendingLng], 15)
+          locationMapInstance.fire("click", { latlng: { lat: pendingLat, lng: pendingLng } })
+        }
+      },
+      () => { locationError.textContent = "Could not get your location." }
+    )
+  } else {
+    locationError.textContent = "Location not supported on this device."
+  }
+})
+
+locationSaveBtn.addEventListener("click", async () => {
+  if (pendingLat === null || pendingLng === null) return
+  if (!tg?.initData) {
+    locationError.textContent = "Open this menu from the store's bot to save your location."
+    return
+  }
+  locationSaveBtn.disabled = true
+  locationError.textContent = ""
+  try {
+    const res = await fetch(`${API_BASE}/webapp/user/location`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vendorId, initData: tg.initData, lat: pendingLat, lng: pendingLng }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || "Could not save location")
+    haptic("medium")
+    showView("menu")
+  } catch (err) {
+    locationError.textContent = err.message
+    locationSaveBtn.disabled = false
+  }
+})
 
 loadMenu()

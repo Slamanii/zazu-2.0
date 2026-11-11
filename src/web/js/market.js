@@ -10,6 +10,8 @@ if (tg) {
 
 const list = document.getElementById("vendor-list")
 const search = document.getElementById("vendor-search")
+const filterBtns = document.querySelectorAll("[data-filter]")
+let activeFilter = "all"
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag)
@@ -54,29 +56,55 @@ function vendorCard(v) {
 }
 
 let latest = 0
-async function load(term = "") {
+let allVendors = []
+
+function applyFilter() {
+  const term = search.value.trim().toLowerCase()
+  let filtered = allVendors.filter(v => !term || v.name.toLowerCase().includes(term))
+  if (activeFilter === “open”) filtered = filtered.filter(v => v.open_now === true)
+  if (activeFilter === “closed”) filtered = filtered.filter(v => v.open_now === false)
+  if (!filtered.length) {
+    status(term ? `No stores match “${search.value.trim()}”.` : “No stores match this filter.”)
+    return
+  }
+  filtered.sort((a, b) => (b.open_now === true) - (a.open_now === true) || a.name.localeCompare(b.name))
+  list.replaceChildren(...filtered.map(vendorCard))
+}
+
+async function load() {
   const ticket = ++latest
   try {
-    const res = await fetch(`${API_BASE}/webapp/vendors?q=${encodeURIComponent(term)}`)
+    const res = await fetch(`${API_BASE}/webapp/vendors`)
     if (!res.ok) throw new Error(String(res.status))
     const { vendors } = await res.json()
-    if (ticket !== latest) return // a newer search already answered
+    if (ticket !== latest) return
     if (!vendors.length) {
-      status(term ? `No stores match “${term}”.` : "No stores are available right now. Please check back soon.")
+      status(“No stores are available right now. Please check back soon.”)
       return
     }
-    // Open stores first, then by name.
-    vendors.sort((a, b) => (b.open_now === true) - (a.open_now === true) || a.name.localeCompare(b.name))
-    list.replaceChildren(...vendors.map(vendorCard))
+    allVendors = vendors
+    applyFilter()
   } catch {
-    if (ticket === latest) status("Could not load stores. Please check your connection and try again.")
+    if (ticket === latest) status(“Could not load stores. Please check your connection and try again.”)
   }
 }
 
+filterBtns.forEach(btn => {
+  btn.addEventListener(“click”, () => {
+    activeFilter = btn.dataset.filter
+    filterBtns.forEach(b => {
+      b.classList.toggle(“active”, b === btn)
+      b.setAttribute(“aria-selected”, b === btn ? “true” : “false”)
+    })
+    tg?.HapticFeedback?.impactOccurred(“light”)
+    applyFilter()
+  })
+})
+
 let timer
-search.addEventListener("input", () => {
+search.addEventListener(“input”, () => {
   clearTimeout(timer)
-  timer = setTimeout(() => load(search.value.trim()), 250)
+  timer = setTimeout(applyFilter, 200)
 })
 
 load()

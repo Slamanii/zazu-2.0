@@ -15,6 +15,8 @@
     <h1 id="store-name">Menu</h1>
     <p id="store-meta" class="store-meta"></p>
   </div>
+  <button id="header-track" class="header-icon-btn" aria-label="Track order" style="display:none">📦</button>
+  <button id="header-location" class="header-icon-btn" aria-label="Set delivery location">📍</button>
   <button id="header-cart" class="header-cart" aria-label="View cart">
     <span aria-hidden="true">🛒</span>
     <span id="header-cart-count" class="header-cart-count">0</span>
@@ -40,6 +42,23 @@
   <p class="cart-note">You'll choose delivery and pay in the chat after this.</p>
   <p id="cart-error" class="cart-error" role="alert"></p>
   <button id="checkout-btn" class="primary-btn">Continue to checkout</button>
+</section>
+
+<!-- View: Track order -->
+<section id="view-track" class="view" aria-label="Track your order">
+  <div id="track-content">
+    <p class="status-msg">Loading your order…</p>
+  </div>
+</section>
+
+<!-- View: Delivery location -->
+<section id="view-location" class="view" aria-label="Delivery location">
+  <p class="location-hint">Tap on the map to set your delivery pin, or use the button below.</p>
+  <div id="location-map"></div>
+  <div id="location-coords" class="location-coords"></div>
+  <button id="location-use-tg" class="primary-btn" style="margin-top:12px">📍 Use my current location</button>
+  <p id="location-error" class="cart-error" role="alert"></p>
+  <button id="location-save-btn" class="primary-btn" style="margin-top:8px" disabled>Save location</button>
 </section>
 
 <!-- Cart floating button -->
