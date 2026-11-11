@@ -1,9 +1,10 @@
 import TelegramBot, { CallbackQuery, Message } from "node-telegram-bot-api";
 import { supabase } from "../db/supabase";
 import { createPaystackLink } from "../api/payment/paystack";
-import { updatePaystackRef, upsertUserLocation } from "../db/queries";
+import { updatePaystackRef, upsertUserLocation, getUserByTelegramId } from "../db/queries";
 import { WEB_APP_ENABLED, webAppUrl } from "./webapp_url";
 import { listVendorBots } from "./registry";
+import { saveLocationFlow } from "./handlers";
 
 
 
@@ -19,7 +20,7 @@ export async function sendLocationToZazuMain(payload: {
 }
 
 export function attachMainHandlers(bot: TelegramBot) {
-  const help = "Welcome to Zazu Marketplace!\n\n/search - browse available vendors\n/search pizza - find a vendor by name\n/help - show these commands\n\nChoose a vendor to open its bot and place your order.";
+  const help = "Welcome to Zazu Marketplace!\n\n/search - browse available vendors\n/search pizza - find a vendor by name\n/location - save or update your delivery location\n/help - show these commands\n\nChoose a vendor to open its bot and place your order.";
   async function replyWithVendors(chatId: number, term: string) {
     try {
       // Running vendor bots only, linked by their real Telegram usernames.
@@ -38,6 +39,41 @@ export function attachMainHandlers(bot: TelegramBot) {
       await bot.sendMessage(chatId, "The marketplace is temporarily unavailable. Please try /search again shortly.").catch(() => {});
     }
   }
+  bot.onText(/^\/location(?:@[A-Za-z0-9_]+)?\s*$/i, async (msg: Message) => {
+    if (!msg.from) return;
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const user = await getUserByTelegramId(userId);
+    if (user?.default_lat && user?.default_lng) {
+      await bot.sendLocation(chatId, user.default_lat, user.default_lng);
+      await bot.sendMessage(chatId, "This is your saved delivery location. Share a new one to update it.", {
+        reply_markup: {
+          keyboard: [[{ text: "Update Location", request_location: true }]],
+          one_time_keyboard: true,
+          resize_keyboard: true,
+        },
+      });
+    } else {
+      await bot.sendMessage(chatId, "No delivery location saved yet. Share your location below.", {
+        reply_markup: {
+          keyboard: [[{ text: "Share Location", request_location: true }]],
+          one_time_keyboard: true,
+          resize_keyboard: true,
+        },
+      });
+    }
+  });
+
+  bot.on("location", async (msg: Message) => {
+    if (!msg.location || !msg.from || !msg.chat) return;
+    try {
+      await saveLocationFlow(bot, msg.chat.id, msg.from.id, msg.location.latitude, msg.location.longitude);
+    } catch (err: any) {
+      console.error("[ZAZU_MAIN] location save error:", err.message);
+      await bot.sendMessage(msg.chat.id, "Could not save location, please try again.");
+    }
+  });
+
   bot.onText(/^\/(?:start|help)(?:@[A-Za-z0-9_]+)?\s*$/i, async msg => {
     await bot.sendMessage(msg.chat.id, help, WEB_APP_ENABLED
       ? { reply_markup: { inline_keyboard: [[{ text: "🛍 Open marketplace", web_app: { url: webAppUrl(null) } }]] } }

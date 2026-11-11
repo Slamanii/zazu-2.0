@@ -3,7 +3,8 @@
 import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { supabase } from "../db/supabase";
-import { getCart, getCategoriesWithItems, getVendorAverageRating, upsertCart } from "../db/queries";
+import { GOOGLE_MAPS_API_KEY } from "../env";
+import { getCart, getCategoriesWithItems, getVendorAverageRating, upsertCart, getUserByTelegramId, upsertUserLocation } from "../db/queries";
 import { getVendorBotEntry, listVendorBots } from "../telegram/registry";
 import { editCartSummary, sendCartSummary } from "../telegram/handlers";
 import { CartItem } from "../types";
@@ -196,6 +197,82 @@ router.post("/webapp/cart", async (req, res) => {
   } catch (err: any) {
     console.error(`[webapp] cart for vendor ${who.vendorId}, user ${who.userId}: ${err.message}`);
     res.status(500).json({ error: "Could not save your cart, please try again" });
+  }
+});
+
+// ---------- Config for Mini Apps ----------
+
+// Hands public config to the Mini App — only non-secret values.
+router.get("/webapp/config", (_req, res) => {
+  res.json({ googleMapsApiKey: GOOGLE_MAPS_API_KEY || null });
+});
+
+// ---------- User location ----------
+
+// Returns the user's saved delivery location (lat/lng).
+router.get("/webapp/user/location", async (req, res) => {
+  const initData = typeof req.query.initData === "string" ? req.query.initData : "";
+  const vendorId = Number(req.query.vendorId);
+  if (!Number.isSafeInteger(vendorId) || vendorId <= 0) {
+    return res.status(400).json({ error: "vendorId is required" });
+  }
+  const entry = getVendorBotEntry(vendorId);
+  if (!entry) return res.status(503).json({ error: "Bot not running" });
+  const user = verifyInitData(initData, entry.token);
+  if (!user) return res.status(401).json({ error: "Please reopen the menu from the bot" });
+  try {
+    const row = await getUserByTelegramId(user.id);
+    res.json({ lat: row?.default_lat ?? null, lng: row?.default_lng ?? null });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not load location" });
+  }
+});
+
+// Saves or updates the user's delivery location from the web menu.
+router.post("/webapp/user/location", async (req, res) => {
+  const who = viewer(req.body);
+  if ("error" in who) return res.status(who.status).json({ error: who.error });
+  const lat = Number(req.body?.lat);
+  const lng = Number(req.body?.lng);
+  if (!isFinite(lat) || !isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return res.status(400).json({ error: "Invalid coordinates" });
+  }
+  try {
+    await upsertUserLocation(who.userId, lat, lng);
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not save location" });
+  }
+});
+
+// ---------- Active order tracking ----------
+
+// Returns the user's most recent active order for this vendor (placed but not delivered/cancelled).
+router.get("/webapp/order/active", async (req, res) => {
+  const initData = typeof req.query.initData === "string" ? req.query.initData : "";
+  const vendorId = Number(req.query.vendorId);
+  if (!Number.isSafeInteger(vendorId) || vendorId <= 0) {
+    return res.status(400).json({ error: "vendorId is required" });
+  }
+  const entry = getVendorBotEntry(vendorId);
+  if (!entry) return res.status(503).json({ error: "Bot not running" });
+  const user = verifyInitData(initData, entry.token);
+  if (!user) return res.status(401).json({ error: "Please reopen the menu from the bot" });
+  try {
+    const { data, error } = await supabase
+      .from("telegram_orders")
+      .select("id, status, asap_status, subtotal, delivery_fee, total, created_at, driver_name, driver_phone, pickup_code, dropoff_code, ride_type")
+      .eq("user_id", user.id)
+      .eq("vendor_id", vendorId)
+      .in("status", ["pending", "paid", "dispatched", "in_transit"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    res.json({ order: data ?? null });
+  } catch (err: any) {
+    console.error(`[webapp] active order for user ${user.id}: ${err.message}`);
+    res.status(500).json({ error: "Could not load order" });
   }
 });
 
