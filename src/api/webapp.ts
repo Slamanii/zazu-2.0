@@ -3,6 +3,7 @@
 import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { supabase } from "../db/supabase";
+import { GOOGLE_MAPS_API_KEY } from "../env";
 import { getCart, getCategoriesWithItems, getVendorAverageRating, upsertCart, getUserByTelegramId, upsertUserLocation } from "../db/queries";
 import { getVendorBotEntry, listVendorBots } from "../telegram/registry";
 import { editCartSummary, sendCartSummary } from "../telegram/handlers";
@@ -197,6 +198,13 @@ router.post("/webapp/cart", async (req, res) => {
     console.error(`[webapp] cart for vendor ${who.vendorId}, user ${who.userId}: ${err.message}`);
     res.status(500).json({ error: "Could not save your cart, please try again" });
   }
+});
+
+// ---------- Config for Mini Apps ----------
+
+// Hands public config to the Mini App — only non-secret values.
+router.get("/webapp/config", (_req, res) => {
+  res.json({ googleMapsApiKey: GOOGLE_MAPS_API_KEY || null });
 });
 
 // ---------- User location ----------

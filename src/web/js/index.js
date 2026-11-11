@@ -485,48 +485,18 @@ async function loadActiveOrder() {
 // ── Location editor ─────────────────────────────────────
 let pendingLat = null
 let pendingLng = null
-let locationMapInstance = null
+let gMap = null
+let gMarker = null
+let googleMapsApiKey = null
 
-async function initLocationView() {
-  locationError.textContent = ""
-  locationSaveBtn.disabled = true
-  pendingLat = null
-  pendingLng = null
-  locationCoords.textContent = ""
-
-  if (tg?.initData) {
-    try {
-      const res = await fetch(`${API_BASE}/webapp/user/location?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data.lat && data.lng) {
-          locationCoords.textContent = `Current pin: ${Number(data.lat).toFixed(5)}, ${Number(data.lng).toFixed(5)}`
-        }
-      }
-    } catch {}
-  }
-
-  if (!locationMapInstance) {
-    if (!window.L) {
-      await loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js")
-      const link = document.createElement("link")
-      link.rel = "stylesheet"
-      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      document.head.appendChild(link)
-    }
-    locationMapInstance = window.L.map("location-map", { zoomControl: true }).setView([6.5244, 3.3792], 13)
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(locationMapInstance)
-    let marker = null
-    locationMapInstance.on("click", (e) => {
-      pendingLat = e.latlng.lat
-      pendingLng = e.latlng.lng
-      locationCoords.textContent = `Pin: ${pendingLat.toFixed(5)}, ${pendingLng.toFixed(5)}`
-      locationSaveBtn.disabled = false
-      if (marker) marker.setLatLng(e.latlng)
-      else marker = window.L.marker(e.latlng).addTo(locationMapInstance)
-      haptic()
-    })
-  }
+// Fetch the Maps API key once.
+async function ensureMapsKey() {
+  if (googleMapsApiKey !== null) return googleMapsApiKey
+  try {
+    const res = await fetch(`${API_BASE}/webapp/config`)
+    if (res.ok) googleMapsApiKey = (await res.json()).googleMapsApiKey ?? ""
+  } catch {}
+  return googleMapsApiKey
 }
 
 function loadScript(src) {
@@ -539,19 +509,65 @@ function loadScript(src) {
   })
 }
 
+function setPin(lat, lng) {
+  pendingLat = lat
+  pendingLng = lng
+  locationCoords.textContent = `Pin: ${lat.toFixed(5)}, ${lng.toFixed(5)}`
+  locationSaveBtn.disabled = false
+  haptic()
+  if (!gMap) return
+  const pos = { lat, lng }
+  if (gMarker) gMarker.setPosition(pos)
+  else gMarker = new google.maps.Marker({ position: pos, map: gMap })
+  gMap.panTo(pos)
+}
+
+async function initLocationView() {
+  locationError.textContent = ""
+  locationSaveBtn.disabled = true
+  pendingLat = null
+  pendingLng = null
+  locationCoords.textContent = ""
+
+  let savedLat = null, savedLng = null
+  if (tg?.initData) {
+    try {
+      const res = await fetch(`${API_BASE}/webapp/user/location?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.lat && data.lng) {
+          savedLat = Number(data.lat)
+          savedLng = Number(data.lng)
+          locationCoords.textContent = `Current pin: ${savedLat.toFixed(5)}, ${savedLng.toFixed(5)}`
+        }
+      }
+    } catch {}
+  }
+
+  if (!gMap) {
+    const key = await ensureMapsKey()
+    if (!key) {
+      locationMap.textContent = "Map unavailable — Google Maps API key not configured."
+      return
+    }
+    if (!window.google?.maps) {
+      await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`)
+    }
+    const center = savedLat ? { lat: savedLat, lng: savedLng } : { lat: 6.5244, lng: 3.3792 }
+    gMap = new google.maps.Map(locationMap, { center, zoom: savedLat ? 15 : 13, disableDefaultUI: false, clickableIcons: false })
+    if (savedLat) gMarker = new google.maps.Marker({ position: center, map: gMap })
+    gMap.addListener("click", (e) => {
+      setPin(e.latLng.lat(), e.latLng.lng())
+    })
+  } else if (savedLat) {
+    gMap.setCenter({ lat: savedLat, lng: savedLng })
+  }
+}
+
 locationUseTg.addEventListener("click", () => {
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        pendingLat = pos.coords.latitude
-        pendingLng = pos.coords.longitude
-        locationCoords.textContent = `Pin: ${pendingLat.toFixed(5)}, ${pendingLng.toFixed(5)}`
-        locationSaveBtn.disabled = false
-        if (locationMapInstance) {
-          locationMapInstance.setView([pendingLat, pendingLng], 15)
-          locationMapInstance.fire("click", { latlng: { lat: pendingLat, lng: pendingLng } })
-        }
-      },
+      (pos) => setPin(pos.coords.latitude, pos.coords.longitude),
       () => { locationError.textContent = "Could not get your location." }
     )
   } else {
