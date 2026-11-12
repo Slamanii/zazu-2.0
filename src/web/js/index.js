@@ -85,14 +85,14 @@ function showView(name) {
 
   for (const [key, view] of Object.entries(views)) {
     if (key === name) {
-      // Set initial off-screen position before activating
-      if (goingForward) {
-        view.classList.add("slide-from-right")
-      } else {
-        view.classList.remove("slide-from-right")
-      }
-      // Force reflow so the starting position registers before the transition
+      // Set the off-screen starting position for the transition
+      if (goingForward) view.classList.add("slide-from-right")
+      // else: view already sits at translateX(-100%) (the .view default)
+      // Force reflow so the browser commits the starting position
       view.getBoundingClientRect()
+      // Remove slide-from-right before adding active so only .view.active
+      // controls the final transform (avoids CSS specificity conflict)
+      view.classList.remove("slide-from-right")
       view.classList.add("active")
     } else {
       view.classList.remove("active")
