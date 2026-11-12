@@ -30,6 +30,11 @@ export interface Item {
   price: number
   stock: number
   image_url?: string
+  weight_kg?: number | null
+  length_cm?: number | null
+  width_cm?: number | null
+  height_cm?: number | null
+  size_estimated?: boolean | null
 }
 
 export interface Category {
@@ -55,6 +60,10 @@ export interface CartItem {
   name: string
   price: number
   qty: number
+  weight_kg?: number | null
+  length_cm?: number | null
+  width_cm?: number | null
+  height_cm?: number | null
 }
 
 export interface CartState {

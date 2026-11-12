@@ -323,7 +323,7 @@ export async function handleAddItemWithQty(
   if (existing) {
     existing.qty += qty;
   } else {
-    items.push({ itemId: item.id, name: item.name, price: item.price, qty });
+    items.push({ itemId: item.id, name: item.name, price: item.price, qty, weight_kg: item.weight_kg, length_cm: item.length_cm, width_cm: item.width_cm, height_cm: item.height_cm });
   }
   const total = items.reduce((sum, i) => sum + i.price * i.qty, 0);
   await upsertCart(userId, vendorId, items, total);

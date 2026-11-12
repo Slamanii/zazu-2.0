@@ -141,7 +141,7 @@ async function priceCart(vendorId: number, items: unknown): Promise<{ cart: Cart
     if (qty > item.stock) {
       return { status: 409, error: item.stock > 0 ? `Only ${item.stock} ${item.name} left` : `${item.name} is out of stock` };
     }
-    cart.push({ itemId: item.id, name: item.name, price: item.price, qty });
+    cart.push({ itemId: item.id, name: item.name, price: item.price, qty, weight_kg: item.weight_kg, length_cm: item.length_cm, width_cm: item.width_cm, height_cm: item.height_cm });
   }
   return { cart, total: cart.reduce((sum, i) => sum + i.price * i.qty, 0) };
 }

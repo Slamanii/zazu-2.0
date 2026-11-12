@@ -23,6 +23,8 @@
   </button>
 </header>
 
+<div class="views-container">
+
 <!-- View: Menu -->
 <main id="view-menu" class="view active">
   <input id="menu-search" class="search" type="search" placeholder="Search the menu" autocomplete="off" />
@@ -33,7 +35,7 @@
 </main>
 
 <!-- View: Cart -->
-<section id="view-cart" class="view" aria-label="Your order">
+<section id="view-cart" class="view slide-from-right" aria-label="Your order">
   <div id="cart-list" class="cart-list"></div>
   <div class="cart-summary">
     <span>Total</span>
@@ -45,21 +47,28 @@
 </section>
 
 <!-- View: Track order -->
-<section id="view-track" class="view" aria-label="Track your order">
+<section id="view-track" class="view slide-from-right" aria-label="Track your order">
   <div id="track-content">
     <p class="status-msg">Loading your order…</p>
   </div>
 </section>
 
-<!-- View: Delivery location -->
-<section id="view-location" class="view" aria-label="Delivery location">
-  <p class="location-hint">Tap on the map to set your delivery pin, or use the button below.</p>
+</div>
+
+<!-- Fullscreen location picker overlay (not a view — overlays everything) -->
+<div id="location-overlay" class="location-overlay" hidden>
   <div id="location-map"></div>
-  <div id="location-coords" class="location-coords"></div>
-  <button id="location-use-tg" class="primary-btn" style="margin-top:12px">📍 Use my current location</button>
-  <p id="location-error" class="cart-error" role="alert"></p>
-  <button id="location-save-btn" class="primary-btn" style="margin-top:8px" disabled>Save location</button>
-</section>
+  <button id="location-close" class="location-close">✕ Close</button>
+  <div class="location-bottom">
+    <p class="location-hint">Drag the pin or tap a spot to move it to the exact drop-off point.</p>
+    <p id="location-error" class="location-error-msg" role="alert"></p>
+    <div class="location-actions">
+      <button id="location-use-tg" class="loc-btn loc-btn-outline">📍 Use my current position</button>
+      <button id="location-remove" class="loc-btn loc-btn-outline">✕ Remove pin</button>
+    </div>
+    <button id="location-save-btn" class="loc-btn loc-btn-primary" disabled>Save location</button>
+  </div>
+</div>
 
 <!-- Cart floating button -->
 <button id="cart-fab" aria-label="View cart">

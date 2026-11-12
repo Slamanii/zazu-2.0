@@ -37,9 +37,11 @@ export function deliveryItems(cart: CartItem[]): DeliveryItem[] {
   return cart.map((item) => ({
     name: item.name,
     price: item.price * item.qty,
-    dimensions: ITEM_DIMENSIONS_CM,
+    dimensions: (item.length_cm && item.width_cm && item.height_cm)
+      ? [Number(item.length_cm), Number(item.width_cm), Number(item.height_cm)]
+      : ITEM_DIMENSIONS_CM,
     quantity: item.qty,
-    weight: ITEM_WEIGHT_KG,
+    weight: item.weight_kg ? Number(item.weight_kg) : ITEM_WEIGHT_KG,
     type: ITEM_TYPE,
   }));
 }

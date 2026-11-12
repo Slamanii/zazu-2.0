@@ -19,7 +19,7 @@ let submitting = false
 
 // ── DOM ─────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id)
-const views = { menu: $("view-menu"), cart: $("view-cart"), track: $("view-track"), location: $("view-location") }
+const views = { menu: $("view-menu"), cart: $("view-cart"), track: $("view-track") }
 const storeName = $("store-name")
 const storeMeta = $("store-meta")
 const backBtn = $("back-btn")
@@ -38,9 +38,11 @@ const headerCartCount = $("header-cart-count")
 const headerTrack = $("header-track")
 const headerLocation = $("header-location")
 const trackContent = $("track-content")
+const locationOverlay = $("location-overlay")
 const locationMap = $("location-map")
-const locationCoords = $("location-coords")
+const locationClose = $("location-close")
 const locationUseTg = $("location-use-tg")
+const locationRemove = $("location-remove")
 const locationError = $("location-error")
 const locationSaveBtn = $("location-save-btn")
 
@@ -77,25 +79,224 @@ function statusMessage(text) {
 }
 
 // ── Navigation ──────────────────────────────────────────
+const VIEW_ORDER = ["menu", "cart", "track"]
+let currentView = "menu"
+
 function showView(name) {
-  for (const [key, view] of Object.entries(views)) view.classList.toggle("active", key === name)
-  const inCart = name === "cart"
+  if (!views[name]) return
+  const fromIdx = VIEW_ORDER.indexOf(currentView)
+  const toIdx = VIEW_ORDER.indexOf(name)
+  const goingForward = toIdx > fromIdx
+  currentView = name
+
+  for (const [key, view] of Object.entries(views)) {
+    if (key === name) {
+      // Set initial off-screen position before activating
+      if (goingForward) {
+        view.classList.add("slide-from-right")
+      } else {
+        view.classList.remove("slide-from-right")
+      }
+      // Force reflow so the starting position registers before the transition
+      view.getBoundingClientRect()
+      view.classList.add("active")
+    } else {
+      view.classList.remove("active")
+      // Outgoing view: set it up to slide away correctly on next show
+      if (VIEW_ORDER.indexOf(key) < toIdx) {
+        view.classList.remove("slide-from-right")
+      } else {
+        view.classList.add("slide-from-right")
+      }
+    }
+  }
+
   const notMenu = name !== "menu"
   backBtn.style.display = notMenu && !tg ? "block" : "none"
   if (tg) notMenu ? tg.BackButton.show() : tg.BackButton.hide()
-  if (inCart) renderCart()
+  if (name === "cart") renderCart()
   if (name === "track") loadActiveOrder()
-  if (name === "location") initLocationView()
   updateCartFab()
   window.scrollTo(0, 0)
 }
 
 backBtn.addEventListener("click", () => showView("menu"))
-tg?.BackButton.onClick(() => showView("menu"))
+tg?.BackButton.onClick(() => {
+  if (!locationOverlay.hidden) {
+    closeLocationOverlay()
+  } else {
+    showView("menu")
+  }
+})
 cartFab.addEventListener("click", () => showView("cart"))
 headerCart.addEventListener("click", () => showView("cart"))
 headerTrack.addEventListener("click", () => showView("track"))
-headerLocation.addEventListener("click", () => showView("location"))
+headerLocation.addEventListener("click", () => openLocationOverlay())
+
+// ── Location overlay ─────────────────────────────────────
+let pendingLat = null
+let pendingLng = null
+let gMap = null
+let gMarker = null
+let googleMapsApiKey = null
+let mapsLoaded = false
+
+async function openLocationOverlay() {
+  locationOverlay.hidden = false
+  locationError.textContent = ""
+  if (tg) tg.BackButton.show()
+  await initLocationMap()
+}
+
+function closeLocationOverlay() {
+  locationOverlay.hidden = true
+  if (currentView === "menu" && tg) tg.BackButton.hide()
+}
+
+locationClose.addEventListener("click", closeLocationOverlay)
+
+async function ensureMapsKey() {
+  if (googleMapsApiKey !== null) return googleMapsApiKey
+  try {
+    const res = await fetch(`${API_BASE}/webapp/config`)
+    if (res.ok) googleMapsApiKey = (await res.json()).googleMapsApiKey ?? ""
+  } catch {}
+  return googleMapsApiKey
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script")
+    s.src = src
+    s.onload = resolve
+    s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+function updatePin(lat, lng) {
+  pendingLat = lat
+  pendingLng = lng
+  locationSaveBtn.disabled = false
+  haptic()
+  if (!gMap) return
+  const pos = { lat, lng }
+  if (gMarker) {
+    gMarker.setPosition(pos)
+  } else {
+    gMarker = new google.maps.Marker({ position: pos, map: gMap, draggable: true })
+    gMarker.addListener("dragend", (e) => updatePin(e.latLng.lat(), e.latLng.lng()))
+  }
+  gMap.panTo(pos)
+}
+
+function clearPin() {
+  pendingLat = null
+  pendingLng = null
+  locationSaveBtn.disabled = true
+  if (gMarker) { gMarker.setMap(null); gMarker = null }
+}
+
+async function initLocationMap() {
+  locationSaveBtn.disabled = true
+  locationError.textContent = ""
+  pendingLat = null
+  pendingLng = null
+
+  let savedLat = null, savedLng = null
+  if (tg?.initData) {
+    try {
+      const res = await fetch(`${API_BASE}/webapp/user/location?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.lat && data.lng) {
+          savedLat = Number(data.lat)
+          savedLng = Number(data.lng)
+        }
+      }
+    } catch {}
+  }
+
+  if (!gMap) {
+    const key = await ensureMapsKey()
+    if (!key) {
+      locationError.textContent = "Map unavailable — Maps API key not configured."
+      return
+    }
+    if (!window.google?.maps) {
+      try {
+        await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`)
+      } catch {
+        locationError.textContent = "Could not load Google Maps."
+        return
+      }
+    }
+    const center = savedLat ? { lat: savedLat, lng: savedLng } : { lat: 6.5244, lng: 3.3792 }
+    gMap = new google.maps.Map(locationMap, {
+      center,
+      zoom: savedLat ? 15 : 13,
+      disableDefaultUI: false,
+      clickableIcons: false,
+    })
+    gMap.addListener("click", (e) => updatePin(e.latLng.lat(), e.latLng.lng()))
+    if (savedLat) {
+      gMarker = new google.maps.Marker({ position: center, map: gMap, draggable: true })
+      gMarker.addListener("dragend", (e) => updatePin(e.latLng.lat(), e.latLng.lng()))
+      pendingLat = savedLat
+      pendingLng = savedLng
+      locationSaveBtn.disabled = false
+    }
+  } else if (savedLat) {
+    gMap.setCenter({ lat: savedLat, lng: savedLng })
+    if (!gMarker) {
+      gMarker = new google.maps.Marker({ position: { lat: savedLat, lng: savedLng }, map: gMap, draggable: true })
+      gMarker.addListener("dragend", (e) => updatePin(e.latLng.lat(), e.latLng.lng()))
+    }
+    pendingLat = savedLat
+    pendingLng = savedLng
+    locationSaveBtn.disabled = false
+  }
+}
+
+locationUseTg.addEventListener("click", () => {
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => updatePin(pos.coords.latitude, pos.coords.longitude),
+      () => { locationError.textContent = "Could not get your location." }
+    )
+  } else {
+    locationError.textContent = "Location not supported on this device."
+  }
+})
+
+locationRemove.addEventListener("click", () => {
+  clearPin()
+  haptic()
+})
+
+locationSaveBtn.addEventListener("click", async () => {
+  if (pendingLat === null || pendingLng === null) return
+  if (!tg?.initData) {
+    locationError.textContent = "Open this menu from the store's bot to save your location."
+    return
+  }
+  locationSaveBtn.disabled = true
+  locationError.textContent = ""
+  try {
+    const res = await fetch(`${API_BASE}/webapp/user/location`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vendorId, initData: tg.initData, lat: pendingLat, lng: pendingLng }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || "Could not save location")
+    haptic("medium")
+    closeLocationOverlay()
+  } catch (err) {
+    locationError.textContent = err.message
+    locationSaveBtn.disabled = false
+  }
+})
 
 // ── Load ────────────────────────────────────────────────
 async function loadMenu() {
@@ -133,13 +334,10 @@ async function checkForActiveOrder() {
 }
 
 // ── Shared cart ─────────────────────────────────────────
-// The menu and the chat share one cart, stored in Supabase. The menu loads it on open, saves
-// each change shortly after it is made, and checks for changes made in the chat every few
-// seconds. A local change always wins over an older copy from the server.
 const SAVE_DELAY_MS = 400
 const POLL_MS = 4000
-let localVersion = 0   // bumped on every change made here
-let savedVersion = 0   // the last local version the server has
+let localVersion = 0
+let savedVersion = 0
 let saveTimer = null
 let saving = false
 
@@ -155,7 +353,6 @@ const cartLines = () => [...cart.values()].map(({ item, qty }) => ({ itemId: ite
 const sameLines = (a, b) =>
   a.length === b.length && a.every((l) => b.some((m) => m.itemId === l.itemId && m.qty === l.qty))
 
-// Shows the server's cart. Items no longer on the menu are left out.
 function applyServerCart(lines) {
   if (sameLines(lines, cartLines())) return
   cart.clear()
@@ -169,7 +366,7 @@ function applyServerCart(lines) {
 }
 
 async function cartRequest(path, extra = {}) {
-  if (!tg?.initData) return null // opened outside Telegram: the cart stays on this page
+  if (!tg?.initData) return null
   const res = await fetch(`${API_BASE}/webapp/cart/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -181,13 +378,11 @@ async function cartRequest(path, extra = {}) {
 }
 
 async function loadServerCart() {
-  if (saving || saveTimer || localVersion !== savedVersion) return // a local change is on its way
+  if (saving || saveTimer || localVersion !== savedVersion) return
   try {
     const body = await cartRequest("state")
     if (body && localVersion === savedVersion && !saving && !saveTimer) applyServerCart(body.items)
-  } catch {
-    // Offline for a moment; the next poll tries again.
-  }
+  } catch {}
 }
 
 function scheduleSave() {
@@ -204,12 +399,10 @@ async function saveCart() {
   try {
     const body = await cartRequest("sync", { items: cartLines() })
     savedVersion = version
-    // Nothing changed here while saving: show exactly what the server stored.
     if (body && version === localVersion) applyServerCart(body.items)
   } catch (err) {
     savedVersion = version
     cartError.textContent = err.message
-    // Stock or the menu changed: reload both so the page shows what's possible.
     if (err.status === 409) { await loadMenu() }
   } finally {
     saving = false
@@ -234,7 +427,6 @@ function renderHeader(vendor) {
 }
 
 // ── Menu ────────────────────────────────────────────────
-// One category at a time: the tabs switch between them. A search looks across all of them.
 let activeTab = null
 
 function renderChips() {
@@ -268,7 +460,7 @@ function renderMenu() {
     : categories.find((cat) => cat.id === activeTab)?.items ?? []
 
   if (!items.length) {
-    return statusMessage(term ? `Nothing matches “${search.value.trim()}”.` : "Nothing in this category yet.")
+    return statusMessage(term ? `Nothing matches "${search.value.trim()}".` : "Nothing in this category yet.")
   }
   menuList.replaceChildren(el("div", { class: "item-grid", role: "tabpanel" }, items.map(itemCard)))
 }
@@ -276,7 +468,6 @@ function renderMenu() {
 function itemCard(item) {
   const inStock = item.stock > 0
   const qty = cart.get(item.id)?.qty ?? 0
-  // No photo, or one that fails to load: the item's first letter stands in.
   const placeholder = () => el("div", { class: "item-photo placeholder", "aria-hidden": "true" }, (item.name.trim()[0] || "?").toUpperCase())
   const photo = item.image_url
     ? el("img", { class: "item-photo", src: item.image_url, alt: "", loading: "lazy", onerror: (e) => e.target.replaceWith(placeholder()) })
@@ -320,7 +511,6 @@ function changeQty(item, delta) {
   else cart.set(item.id, { item, qty })
   haptic()
   cartError.textContent = ""
-  // Redraw just this item, and the cart if it is open.
   const card = menuList.querySelector(`[data-item="${item.id}"]`)
   if (card) card.replaceWith(itemCard(item))
   if (views.cart.classList.contains("active")) renderCart()
@@ -340,11 +530,10 @@ function cartTotals() {
 
 function updateCartFab() {
   const { count, total } = cartTotals()
-  const onMenu = views.menu.classList.contains("active")
+  const onMenu = currentView === "menu"
   cartFabCount.textContent = count
   cartFabTotal.textContent = naira(total)
   cartFab.classList.toggle("visible", onMenu && count > 0)
-  // The header cart sits top right on the menu; in the cart, back takes its place.
   headerCart.style.display = onMenu ? "" : "none"
   headerCartCount.textContent = count
   headerCartCount.classList.toggle("empty", count === 0)
@@ -379,7 +568,6 @@ async function checkout() {
     cartError.textContent = "Open this menu from the store's Telegram bot to place an order."
     return
   }
-  // The checkout below saves the whole cart, so a pending save is no longer needed.
   clearTimeout(saveTimer)
   saveTimer = null
   submitting = true
@@ -399,11 +587,9 @@ async function checkout() {
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || "Could not send your order, please try again.")
     haptic("medium")
-    // The bot has sent the cart to the chat, where checkout continues.
     tg.close()
   } catch (err) {
     cartError.textContent = err.message
-    // Stock may have changed; reload it so the menu shows what's left.
     loadMenu()
   } finally {
     savedVersion = localVersion
@@ -481,122 +667,5 @@ async function loadActiveOrder() {
     trackContent.replaceChildren(el("p", { class: "status-msg" }, "Could not load order status."))
   }
 }
-
-// ── Location editor ─────────────────────────────────────
-let pendingLat = null
-let pendingLng = null
-let gMap = null
-let gMarker = null
-let googleMapsApiKey = null
-
-// Fetch the Maps API key once.
-async function ensureMapsKey() {
-  if (googleMapsApiKey !== null) return googleMapsApiKey
-  try {
-    const res = await fetch(`${API_BASE}/webapp/config`)
-    if (res.ok) googleMapsApiKey = (await res.json()).googleMapsApiKey ?? ""
-  } catch {}
-  return googleMapsApiKey
-}
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script")
-    s.src = src
-    s.onload = resolve
-    s.onerror = reject
-    document.head.appendChild(s)
-  })
-}
-
-function setPin(lat, lng) {
-  pendingLat = lat
-  pendingLng = lng
-  locationCoords.textContent = `Pin: ${lat.toFixed(5)}, ${lng.toFixed(5)}`
-  locationSaveBtn.disabled = false
-  haptic()
-  if (!gMap) return
-  const pos = { lat, lng }
-  if (gMarker) gMarker.setPosition(pos)
-  else gMarker = new google.maps.Marker({ position: pos, map: gMap })
-  gMap.panTo(pos)
-}
-
-async function initLocationView() {
-  locationError.textContent = ""
-  locationSaveBtn.disabled = true
-  pendingLat = null
-  pendingLng = null
-  locationCoords.textContent = ""
-
-  let savedLat = null, savedLng = null
-  if (tg?.initData) {
-    try {
-      const res = await fetch(`${API_BASE}/webapp/user/location?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data.lat && data.lng) {
-          savedLat = Number(data.lat)
-          savedLng = Number(data.lng)
-          locationCoords.textContent = `Current pin: ${savedLat.toFixed(5)}, ${savedLng.toFixed(5)}`
-        }
-      }
-    } catch {}
-  }
-
-  if (!gMap) {
-    const key = await ensureMapsKey()
-    if (!key) {
-      locationMap.textContent = "Map unavailable — Google Maps API key not configured."
-      return
-    }
-    if (!window.google?.maps) {
-      await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`)
-    }
-    const center = savedLat ? { lat: savedLat, lng: savedLng } : { lat: 6.5244, lng: 3.3792 }
-    gMap = new google.maps.Map(locationMap, { center, zoom: savedLat ? 15 : 13, disableDefaultUI: false, clickableIcons: false })
-    if (savedLat) gMarker = new google.maps.Marker({ position: center, map: gMap })
-    gMap.addListener("click", (e) => {
-      setPin(e.latLng.lat(), e.latLng.lng())
-    })
-  } else if (savedLat) {
-    gMap.setCenter({ lat: savedLat, lng: savedLng })
-  }
-}
-
-locationUseTg.addEventListener("click", () => {
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setPin(pos.coords.latitude, pos.coords.longitude),
-      () => { locationError.textContent = "Could not get your location." }
-    )
-  } else {
-    locationError.textContent = "Location not supported on this device."
-  }
-})
-
-locationSaveBtn.addEventListener("click", async () => {
-  if (pendingLat === null || pendingLng === null) return
-  if (!tg?.initData) {
-    locationError.textContent = "Open this menu from the store's bot to save your location."
-    return
-  }
-  locationSaveBtn.disabled = true
-  locationError.textContent = ""
-  try {
-    const res = await fetch(`${API_BASE}/webapp/user/location`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ vendorId, initData: tg.initData, lat: pendingLat, lng: pendingLng }),
-    })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(body.error || "Could not save location")
-    haptic("medium")
-    showView("menu")
-  } catch (err) {
-    locationError.textContent = err.message
-    locationSaveBtn.disabled = false
-  }
-})
 
 loadMenu()
