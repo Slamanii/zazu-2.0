@@ -37,13 +37,15 @@
 <!-- View: Cart -->
 <section id="view-cart" class="view slide-from-right" aria-label="Your order">
   <div id="cart-list" class="cart-list"></div>
-  <div class="cart-summary">
-    <span>Total</span>
-    <strong id="cart-total">₦0</strong>
+  <div class="cart-footer">
+    <div class="cart-summary">
+      <span>Total</span>
+      <strong id="cart-total">₦0</strong>
+    </div>
+    <p class="cart-note">You'll choose delivery and pay in the chat after this.</p>
+    <p id="cart-error" class="cart-error" role="alert"></p>
+    <button id="checkout-btn" class="primary-btn">Continue to checkout</button>
   </div>
-  <p class="cart-note">You'll choose delivery and pay in the chat after this.</p>
-  <p id="cart-error" class="cart-error" role="alert"></p>
-  <button id="checkout-btn" class="primary-btn">Continue to checkout</button>
 </section>
 
 <!-- View: Track order -->
