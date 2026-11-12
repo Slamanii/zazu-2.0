@@ -38,7 +38,12 @@ export async function getCategoriesWithItems(vendorId: number) {
         name,
         price,
         stock,
-        image_url
+        image_url,
+        weight_kg,
+        length_cm,
+        width_cm,
+        height_cm,
+        size_estimated
       )
     `,
     )
