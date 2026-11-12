@@ -21,8 +21,12 @@ body {
   color: var(--text);
   font-size: 15px;
   line-height: 1.4;
-  padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   -webkit-tap-highlight-color: transparent;
+  /* Prevent body-level scroll — views scroll internally */
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 button { font: inherit; color: inherit; cursor: pointer; }
@@ -31,9 +35,9 @@ img { display: block; }
 
 /* ── Header ── */
 .store-header {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 10;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -111,7 +115,8 @@ img { display: block; }
 .views-container {
   position: relative;
   overflow: hidden;
-  height: calc(100vh - var(--header-h, 64px));
+  flex: 1;
+  min-height: 0;
 }
 
 .search {
