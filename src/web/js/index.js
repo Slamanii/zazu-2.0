@@ -46,12 +46,6 @@ const locationRemove = $("location-remove")
 const locationError = $("location-error")
 const locationSaveBtn = $("location-save-btn")
 
-// The category tabs stick just under the header, whose height depends on the store's name.
-const header = document.querySelector(".store-header")
-function syncHeaderHeight() {
-  document.documentElement.style.setProperty("--header-h", `${header.offsetHeight}px`)
-}
-window.addEventListener("resize", syncHeaderHeight)
 
 // Builds an element. Text always goes in as text, never as HTML: names come from vendors.
 function el(tag, attrs = {}, ...children) {
@@ -310,7 +304,6 @@ async function loadMenu() {
     const data = await res.json()
     categories = data.categories
     renderHeader(data.vendor)
-    syncHeaderHeight()
     renderChips()
     renderMenu()
   } catch {
