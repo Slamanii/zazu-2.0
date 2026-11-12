@@ -106,7 +106,7 @@ function showView(name) {
   }
 
   const notMenu = name !== "menu"
-  backBtn.style.display = notMenu && !tg ? "block" : "none"
+  backBtn.style.display = notMenu ? "block" : "none"
   if (tg) notMenu ? tg.BackButton.show() : tg.BackButton.hide()
   if (name === "cart") renderCart()
   if (name === "track") loadActiveOrder()
