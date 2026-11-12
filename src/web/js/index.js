@@ -323,14 +323,7 @@ async function loadMenu() {
 }
 
 async function checkForActiveOrder() {
-  if (!tg?.initData || !vendorId) return
-  try {
-    const res = await fetch(`${API_BASE}/webapp/order/active?vendorId=${vendorId}&initData=${encodeURIComponent(tg.initData)}`)
-    if (res.ok) {
-      const { order } = await res.json()
-      headerTrack.style.display = order ? "" : "none"
-    }
-  } catch {}
+  // Track button is always visible; this is a no-op kept for future use.
 }
 
 // ── Shared cart ─────────────────────────────────────────
@@ -534,7 +527,6 @@ function updateCartFab() {
   cartFabCount.textContent = count
   cartFabTotal.textContent = naira(total)
   cartFab.classList.toggle("visible", onMenu && count > 0)
-  headerCart.style.display = onMenu ? "" : "none"
   headerCartCount.textContent = count
   headerCartCount.classList.toggle("empty", count === 0)
 }
@@ -628,10 +620,8 @@ async function loadActiveOrder() {
     const { order } = await res.json()
     if (!order) {
       trackContent.replaceChildren(el("p", { class: "track-no-order" }, "No active order right now."))
-      headerTrack.style.display = "none"
       return
     }
-    headerTrack.style.display = ""
     const current = statusLabel(order.asap_status, order.status)
     const stepIdx = TRACK_STEPS.findIndex(s => s.key === current)
     const steps = TRACK_STEPS.map((s, i) => {
